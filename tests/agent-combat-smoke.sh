@@ -46,7 +46,50 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$session_id" ]] || session_id="fake-claude-session"
-if [[ "$prompt" == *"strengths_to_steal"* ]]; then
+if [[ "$prompt" == *"You are an independent judge"* ]]; then
+  count_file="${FAKE_JUDGE_COUNT_FILE:-}"
+  count=0
+  if [[ -n "$count_file" && -f "$count_file" ]]; then
+    count="$(cat "$count_file")"
+  fi
+  count="$((count + 1))"
+  if [[ -n "$count_file" ]]; then
+    printf '%s\n' "$count" >"$count_file"
+  fi
+  if [[ "${FAKE_JUDGE_ANOTHER:-}" == "1" && "$count" -eq 1 ]]; then
+    jq -n --arg session_id "$session_id" '{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: $session_id,
+      structured_output: {
+        converged: false,
+        unresolved_issues: ["Artifacts are underspecified."],
+        agreements_lacking_justification: [],
+        recommendation: "another_round",
+        focus_for_next_round: "Resolve artifact paths and resume rules.",
+        reasoning: "One focused replay should settle artifact handling."
+      },
+      result: "Done."
+    }'
+  else
+    jq -n --arg session_id "$session_id" '{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: $session_id,
+      structured_output: {
+        converged: true,
+        unresolved_issues: [],
+        agreements_lacking_justification: [],
+        recommendation: "synthesize",
+        focus_for_next_round: null,
+        reasoning: "The plans now converge enough for synthesis."
+      },
+      result: "Done."
+    }'
+  fi
+elif [[ "$prompt" == *"strengths_to_steal"* ]]; then
   jq -n --arg session_id "$session_id" '{
     type: "result",
     subtype: "success",
@@ -180,3 +223,18 @@ test ! -f "$TMP_DIR/fail-run/rounds/r1.json"
 jq -e '.published_round == 0 and .last_successful_artifact == "rounds/r0.json"' "$TMP_DIR/fail-run/config.json" >/dev/null
 cmp "$TMP_DIR/fail-run/plan-agent1.md" "$TMP_DIR/fail-run/rounds/r0-agent1.md"
 cmp "$TMP_DIR/fail-run/plan-agent2.md" "$TMP_DIR/fail-run/rounds/r0-agent2.md"
+
+PATH="$FAKE_BIN:$PATH" FAKE_JUDGE_ANOTHER=1 FAKE_JUDGE_COUNT_FILE="$TMP_DIR/judge-count" "$ROOT_DIR/agent-combat" \
+  --no-interactive \
+  --rounds 0 \
+  --max-extra 1 \
+  --workdir "$TMP_DIR/judge-run" \
+  "draft a tiny implementation plan" >/tmp/agent-combat-judge.out
+
+test -f "$TMP_DIR/judge-run/judge-verdict.json"
+test -f "$TMP_DIR/judge-run/rounds/judge-1.json"
+test -f "$TMP_DIR/judge-run/rounds/judge-2.json"
+test -f "$TMP_DIR/judge-run/rounds/r1-judge-focus.txt"
+test -f "$TMP_DIR/judge-run/rounds/r1.json"
+jq -e '.extra_rounds_used == 1 and .published_round == 1 and .phase == "judge" and .status == "judged"' "$TMP_DIR/judge-run/config.json" >/dev/null
+jq -e '.recommendation == "synthesize" and .converged == true' "$TMP_DIR/judge-run/judge-verdict.json" >/dev/null

@@ -475,6 +475,44 @@ debater_schema_file() {
 JSON
 }
 
+judge_schema_file() {
+  local target="$1"
+  mkdir -p "$target/schemas"
+  cat >"$target/schemas/judge.schema.json" <<'JSON'
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "converged": {"type": "boolean"},
+    "unresolved_issues": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "agreements_lacking_justification": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "recommendation": {
+      "type": "string",
+      "enum": ["synthesize", "another_round"]
+    },
+    "focus_for_next_round": {
+      "type": ["string", "null"]
+    },
+    "reasoning": {"type": "string"}
+  },
+  "required": [
+    "converged",
+    "unresolved_issues",
+    "agreements_lacking_justification",
+    "recommendation",
+    "focus_for_next_round",
+    "reasoning"
+  ]
+}
+JSON
+}
+
 build_round0_prompt() {
   local requirement_file="$1"
   cat <<'PROMPT'
@@ -526,6 +564,88 @@ PROMPT
   cat "$requirement_file"
   cat <<'PROMPT'
 ---END REQUIREMENT---
+PROMPT
+}
+
+build_round_summary_json() {
+  local target="$1"
+  jq -s 'map({
+    round,
+    kind,
+    published,
+    frozen_inputs,
+    agents: {
+      agent1: {name: .agents.agent1.name, parse_status: .agents.agent1.parse_status, output_path: .agents.agent1.output_path},
+      agent2: {name: .agents.agent2.name, parse_status: .agents.agent2.parse_status, output_path: .agents.agent2.output_path}
+    },
+    objections_path
+  })' "$target"/rounds/r*.json
+}
+
+build_objections_json() {
+  local target="$1"
+  local files=("$target"/rounds/r*-objections.json)
+  if [[ ! -e "${files[0]}" ]]; then
+    printf '[]\n'
+    return
+  fi
+  jq -s '.' "${files[@]}"
+}
+
+build_judge_prompt() {
+  local target="$1"
+  local round_summary_file="$2"
+  local objections_file="$3"
+  cat <<'PROMPT'
+You are an independent judge. You did not participate in the debate.
+
+Evaluate ONLY the following:
+1. Did the plans substantively converge on the same approach?
+2. Were major disagreements actually argued through, or did one side
+   just yield without engagement?
+3. Are there parts of the original requirement neither plan addresses?
+
+Do NOT pick a winner based on which sounds more confident or more
+detailed. Length is not a signal of quality. Confidence is not a signal
+of correctness. Look specifically for places where both plans agree
+WITHOUT visible justification: those are suspicious.
+
+Your response must match the provided structured output schema.
+
+Requirement:
+---BEGIN REQUIREMENT---
+PROMPT
+  cat "$target/requirement.txt"
+  cat <<'PROMPT'
+---END REQUIREMENT---
+
+Final Agent 1 plan:
+---BEGIN AGENT 1 PLAN---
+PROMPT
+  cat "$target/plan-agent1.md"
+  cat <<'PROMPT'
+---END AGENT 1 PLAN---
+
+Final Agent 2 plan:
+---BEGIN AGENT 2 PLAN---
+PROMPT
+  cat "$target/plan-agent2.md"
+  cat <<'PROMPT'
+---END AGENT 2 PLAN---
+
+Round summary JSON:
+---BEGIN ROUND SUMMARY---
+PROMPT
+  cat "$round_summary_file"
+  cat <<'PROMPT'
+---END ROUND SUMMARY---
+
+Objections ledger JSON:
+---BEGIN OBJECTIONS---
+PROMPT
+  cat "$objections_file"
+  cat <<'PROMPT'
+---END OBJECTIONS---
 PROMPT
 }
 
@@ -642,6 +762,18 @@ validate_debater_response() {
   ' "$file" >/dev/null
 }
 
+validate_judge_verdict() {
+  local file="$1"
+  jq -e '
+    (.converged | type == "boolean") and
+    (.unresolved_issues | type == "array") and
+    (.agreements_lacking_justification | type == "array") and
+    (.recommendation == "synthesize" or .recommendation == "another_round") and
+    ((.focus_for_next_round | type == "string") or (.focus_for_next_round == null)) and
+    (.reasoning | type == "string" and length > 0)
+  ' "$file" >/dev/null
+}
+
 run_claude_round0() {
   local target="$1"
   local origin_cwd="$2"
@@ -678,6 +810,59 @@ run_claude_round0() {
 
   update_config "$target" --arg id "$session_id" '.agent1.session_id = $id'
   log_event "$target" "agent.call.completed" "$(jq -n --arg agent agent1 --arg round r0 --arg session_id "$session_id" '{agent: $agent, round: $round, session_id: $session_id}')"
+}
+
+run_judge_attempt() {
+  local target="$1"
+  local attempt="$2"
+  local origin_cwd
+  origin_cwd="$(jq -r '.origin_cwd' "$target/config.json")"
+
+  judge_schema_file "$target"
+  local schema_file="$target/schemas/judge.schema.json"
+  local schema_json
+  schema_json="$(jq -c . "$schema_file")"
+  local round_summary="$target/rounds/judge-${attempt}-round-summary.json"
+  local objections="$target/rounds/judge-${attempt}-objections.json"
+  local prompt_file="$target/rounds/judge-${attempt}.prompt.txt"
+  local raw_file="$target/rounds/judge-${attempt}.raw.json"
+  local verdict_file="$target/rounds/judge-${attempt}.json"
+  local session_id
+
+  build_round_summary_json "$target" >"$round_summary"
+  build_objections_json "$target" >"$objections"
+  build_judge_prompt "$target" "$round_summary" "$objections" >"$prompt_file"
+
+  session_id="$(uuid)"
+  update_config "$target" --arg id "$session_id" '.phase = "judge" | .judge.session_id = $id'
+  log_event "$target" "judge.call.started" "$(jq -n --arg attempt "$attempt" --arg session_id "$session_id" '{attempt: ($attempt|tonumber), session_id: $session_id}')"
+
+  if ! (
+    cd "$origin_cwd"
+    claude -p \
+      --model "$JUDGE_MODEL" \
+      --session-id "$session_id" \
+      --permission-mode plan \
+      --tools "" \
+      --output-format json \
+      --json-schema "$schema_json" \
+      "$(cat "$prompt_file")"
+  ) >"$raw_file" 2>"$target/rounds/judge-${attempt}.stderr"; then
+    log_event "$target" "judge.call.failed" "$(jq -n --arg attempt "$attempt" '{attempt: ($attempt|tonumber)}')"
+    sed -n '1,80p' "$target/rounds/judge-${attempt}.stderr" >&2
+    die "judge attempt $attempt failed"
+  fi
+
+  jq -e --arg id "$session_id" '.session_id == $id or .sessionId == $id' "$raw_file" >/dev/null \
+    || die "judge attempt $attempt did not report the expected session id"
+  extract_claude_structured "$raw_file" >"$verdict_file" \
+    || die "judge attempt $attempt did not produce structured output"
+  validate_judge_verdict "$verdict_file" \
+    || die "judge attempt $attempt failed verdict validation"
+
+  cp "$verdict_file" "$target/judge-verdict.json"
+  update_config "$target" --arg artifact "judge-verdict.json" '.last_successful_artifact = $artifact'
+  log_event "$target" "judge.call.completed" "$(jq -n --arg attempt "$attempt" --arg session_id "$session_id" --arg recommendation "$(jq -r '.recommendation' "$verdict_file")" '{attempt: ($attempt|tonumber), session_id: $session_id, recommendation: $recommendation}')"
 }
 
 run_claude_debate_turn() {
@@ -1025,6 +1210,40 @@ run_debate_loop() {
   done
 }
 
+run_judge_loop() {
+  local target="$1"
+  if [[ "$NO_JUDGE" -eq 1 ]]; then
+    return
+  fi
+
+  local attempt=1
+  while :; do
+    step "Judge attempt $attempt"
+    run_judge_attempt "$target" "$attempt"
+
+    local recommendation
+    local extra_used
+    recommendation="$(jq -r '.recommendation' "$target/judge-verdict.json")"
+    extra_used="$(jq -r '.extra_rounds_used' "$target/config.json")"
+
+    if [[ "$recommendation" != "another_round" || "$extra_used" -ge "$MAX_EXTRA_ROUNDS" ]]; then
+      update_config "$target" '.phase = "judge" | .status = "judged"'
+      break
+    fi
+
+    local next_round
+    local focus_file
+    next_round="$(( $(jq -r '.published_round' "$target/config.json") + 1 ))"
+    focus_file="$target/rounds/r${next_round}-judge-focus.txt"
+    jq -r '.focus_for_next_round // "Focus on unresolved judge issues."' "$target/judge-verdict.json" >"$focus_file"
+    update_config "$target" '.extra_rounds_used = (.extra_rounds_used + 1)'
+    log_event "$target" "judge.replay.requested" "$(jq -n --argjson next_round "$next_round" --arg focus_path "rounds/r${next_round}-judge-focus.txt" '{next_round: $next_round, focus_path: $focus_path}')"
+    run_debate_round "$target" "$next_round" "$focus_file"
+    attempt="$((attempt + 1))"
+  done
+  ok "Judge verdict written"
+}
+
 print_config() {
   local target="$1"
   if have gum && [[ "$NO_INTERACTIVE" -eq 0 && -t 1 ]]; then
@@ -1271,7 +1490,8 @@ main() {
   maybe_confirm
   run_round0 "$target"
   run_debate_loop "$target"
-  warn "judge and final synthesis are not implemented yet"
+  run_judge_loop "$target"
+  warn "final synthesis is not implemented yet"
 }
 
 main "$@"
