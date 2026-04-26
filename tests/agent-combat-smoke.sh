@@ -54,6 +54,19 @@ if [[ "$prompt" == *"You are synthesizing the final implementation plan"* ]]; th
     session_id: $session_id,
     result: "# Final Plan\n\n- Ship the converged implementation.\n"
   }'
+elif [[ "$prompt" == *"Set status to"* ]]; then
+  message="fresh"
+  if [[ "$prompt" == *"resume"* ]]; then
+    message="resume"
+  fi
+  jq -n --arg session_id "$session_id" --arg message "$message" '{
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: $session_id,
+    structured_output: {status: "ok", message: $message},
+    result: "Done."
+  }'
 elif [[ "$prompt" == *"You are an independent judge"* ]]; then
   count_file="${FAKE_JUDGE_COUNT_FILE:-}"
   count=0
@@ -189,6 +202,10 @@ if [[ "$prompt" == *"strengths_to_steal"* ]]; then
       suggested_test_or_decision_rule: "Accept if r1.json and objections exist."
     }]
   }' >"$output_last"
+elif [[ "$prompt" == *'"status":"ok"'* ]]; then
+  jq -n '{status: "ok", message: "fresh"}' >"$output_last"
+elif [[ "$prompt" == *"Reply with exactly: resumed"* ]]; then
+  printf 'resumed\n' >"$output_last"
 else
   jq -n '{plan_markdown: "# Codex Plan\n\n- Keep state auditable on disk.\n"}' >"$output_last"
 fi
@@ -196,7 +213,42 @@ jq -cn --arg thread_id "$thread_id" '{type: "thread.started", thread_id: $thread
 jq -cn '{type: "turn.completed", usage: {}}'
 SH
 
-chmod +x "$FAKE_BIN/claude" "$FAKE_BIN/codex"
+cat >"$FAKE_BIN/gum" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version)
+    echo "gum fake"
+    ;;
+  style)
+    printf 'style\n' >>"${FAKE_GUM_LOG:?}"
+    shift
+    printf '%s\n' "$@"
+    ;;
+  confirm)
+    printf 'confirm\n' >>"${FAKE_GUM_LOG:?}"
+    exit 0
+    ;;
+  *)
+    echo "unexpected gum command" >&2
+    exit 1
+    ;;
+esac
+SH
+
+chmod +x "$FAKE_BIN/claude" "$FAKE_BIN/codex" "$FAKE_BIN/gum"
+
+FAKE_GUM_LOG="$TMP_DIR/gum.log" script -q "$TMP_DIR/gum.typescript" \
+  env PATH="$FAKE_BIN:$PATH" FAKE_GUM_LOG="$TMP_DIR/gum.log" \
+  "$ROOT_DIR/agent-combat" --dry-run --interactive "gum display" >/dev/null
+grep -q "style" "$TMP_DIR/gum.log"
+
+PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
+  --contract-check \
+  --workdir "$TMP_DIR/contract" \
+  --claude-model fake-claude \
+  --codex-model fake-codex >/tmp/agent-combat-contract.out
+jq -e '.status == "ok" and .codex.session_id == "fake-codex-thread"' "$TMP_DIR/contract/contract-summary.json" >/dev/null
 
 PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
   --no-interactive \
