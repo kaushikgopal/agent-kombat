@@ -1,7 +1,8 @@
 # Agent Kombat
 
-Agent Kombat turns one prompt or plan into a planning debate between Claude Code and Codex.
-It saves the debate, judge verdict, and final plan as plain files you can inspect or resume.
+Agent Kombat turns one prompt or plan into a planning debate between Claude Code
+and Codex. It saves the debate, judge verdict, and final plan as plain files you
+can inspect or resume.
 
 To understand the purpose of this tool, how I use it, and why it is valuable,
 read the full blog post at https://kau.sh/blog/agent-kombat.
@@ -177,17 +178,21 @@ Validate local CLI contracts:
 - `codex`
 - Optional: `gum` for the guided terminal UI and in-progress status panels
 
-## Install Locally
+## Install
 
 ```sh
+git clone https://github.com/kaushikgopal/agent-kombat.git
+cd agent-kombat
 mkdir -p "$HOME/.local/bin"
-ln -sf "$(pwd)/agent-kombat" "$HOME/.local/bin/agent-kombat"
+ln -sf "$PWD/agent-kombat" "$HOME/.local/bin/agent-kombat"
 ```
 
-Fish users can add that directory for the current shell with:
+Make sure `~/.local/bin` is on your `PATH`.
 
-```fish
-fish_add_path "$HOME/.local/bin"
+Verify the install:
+
+```sh
+agent-kombat --help
 ```
 
 ## Notes
