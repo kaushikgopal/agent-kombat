@@ -20,6 +20,7 @@ INTERACTIVE=0
 NO_JUDGE=0
 SHOW_WORKDIR=""
 RESUME_WORKDIR=""
+REQUIREMENT_FILE=""
 CLAUDE_MODEL="opus"
 CODEX_MODEL="gpt-5"
 JUDGE_MODEL="opus"
@@ -53,6 +54,7 @@ Options:
       --dry-run            Print intended configuration without agent calls
       --contract-check     Probe Claude and Codex automation contracts
       --no-judge           Skip judge and replay logic
+      --requirement-file F Read requirement text from a file
       --show WORKDIR       Print latest state for a debate directory
       --resume WORKDIR     Resume from durable state
       --interactive        Allow optional terminal prompts
@@ -184,6 +186,11 @@ parse_args() {
         NO_JUDGE=1
         shift
         ;;
+      --requirement-file)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        REQUIREMENT_FILE="$2"
+        shift 2
+        ;;
       --show)
         [[ $# -ge 2 ]] || die "$1 requires a value"
         SHOW_WORKDIR="$2"
@@ -220,6 +227,28 @@ parse_args() {
         ;;
     esac
   done
+}
+
+load_requirement_file() {
+  if [[ -z "$REQUIREMENT_FILE" ]]; then
+    return
+  fi
+  [[ -f "$REQUIREMENT_FILE" ]] || die "requirement file does not exist: $REQUIREMENT_FILE"
+
+  local file_text
+  file_text="$(cat "$REQUIREMENT_FILE")"
+  if [[ -n "$REQUIREMENT" ]]; then
+    REQUIREMENT="$(cat <<EOF
+$REQUIREMENT
+
+---BEGIN REQUIREMENT FILE: $REQUIREMENT_FILE---
+$file_text
+---END REQUIREMENT FILE---
+EOF
+)"
+  else
+    REQUIREMENT="$file_text"
+  fi
 }
 
 init_model_defaults() {
@@ -1622,6 +1651,7 @@ run_contract_check() {
 main() {
   init_model_defaults
   parse_args "$@"
+  load_requirement_file
   init_color
   preflight_jq
 

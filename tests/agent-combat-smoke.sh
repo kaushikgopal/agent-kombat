@@ -21,6 +21,17 @@ grep -q "missing requirement" /tmp/agent-combat-missing.out
 grep -q '"rounds_planned": 1' /tmp/agent-combat-cheap.out
 grep -q '"judge_enabled": false' /tmp/agent-combat-cheap.out
 
+cat >"$TMP_DIR/sample-plan.md" <<'MD'
+# Sample Plan
+
+Build a tiny CLI that prints hello.
+MD
+
+"$ROOT_DIR/agent-combat" --dry-run --no-interactive --requirement-file "$TMP_DIR/sample-plan.md" \
+  "debate this plan" >/tmp/agent-combat-file.out
+grep -q "debate this plan" /tmp/agent-combat-file.out
+grep -q "Build a tiny CLI that prints hello." /tmp/agent-combat-file.out
+
 FAKE_BIN="$TMP_DIR/bin"
 mkdir -p "$FAKE_BIN"
 
