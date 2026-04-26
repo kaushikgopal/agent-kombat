@@ -1,0 +1,647 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+
+ENV_CLAUDE_MODEL="${CLAUDE_MODEL:-}"
+ENV_CODEX_MODEL="${CODEX_MODEL:-}"
+ENV_AGENT_COMBAT_CLAUDE_MODEL="${AGENT_COMBAT_CLAUDE_MODEL:-}"
+ENV_AGENT_COMBAT_CODEX_MODEL="${AGENT_COMBAT_CODEX_MODEL:-}"
+ENV_AGENT_COMBAT_JUDGE_MODEL="${AGENT_COMBAT_JUDGE_MODEL:-}"
+
+ROUNDS=3
+MAX_EXTRA_ROUNDS=1
+WORKDIR=""
+DRY_RUN=0
+CONTRACT_CHECK=0
+NO_COLOR_FLAG=0
+NO_INTERACTIVE=0
+INTERACTIVE=0
+NO_JUDGE=0
+SHOW_WORKDIR=""
+RESUME_WORKDIR=""
+CLAUDE_MODEL="opus"
+CODEX_MODEL="gpt-5"
+JUDGE_MODEL="opus"
+CLAUDE_MODEL_SOURCE="default"
+CODEX_MODEL_SOURCE="default"
+JUDGE_MODEL_SOURCE="default"
+REQUIREMENT=""
+
+COLOR_RESET=""
+COLOR_DIM=""
+COLOR_RED=""
+COLOR_GREEN=""
+COLOR_YELLOW=""
+COLOR_BLUE=""
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  agent-combat [options] "requirement"
+  agent-combat --contract-check
+  agent-combat --show WORKDIR
+  agent-combat --resume WORKDIR
+
+Options:
+  -r, --rounds N           Debate rounds after round 0 (default: 3)
+  -m, --max-extra N        Maximum focused replay rounds (default: 1)
+  -d, --workdir DIR        Debate artifact directory
+      --claude-model NAME  Claude model alias/name (default: env or opus)
+      --codex-model NAME   Codex model alias/name (default: env or gpt-5)
+      --judge-model NAME   Judge model alias/name (default: Claude model)
+      --dry-run            Print intended configuration without agent calls
+      --contract-check     Probe Claude and Codex automation contracts
+      --no-judge           Skip judge and replay logic
+      --show WORKDIR       Print latest state for a debate directory
+      --resume WORKDIR     Resume from durable state
+      --interactive        Allow optional terminal prompts
+      --no-interactive     Disable optional terminal prompts
+      --no-color           Disable ANSI color output
+  -h, --help               Show this help
+USAGE
+}
+
+die() {
+  printf '%serror:%s %s\n' "$COLOR_RED" "$COLOR_RESET" "$*" >&2
+  exit 1
+}
+
+contract_die() {
+  printf '%scontract:%s %s\n' "$COLOR_RED" "$COLOR_RESET" "$*" >&2
+  exit 2
+}
+
+info() { printf '%s%s%s\n' "$COLOR_DIM" "$*" "$COLOR_RESET"; }
+step() { printf '%s==>%s %s\n' "$COLOR_BLUE" "$COLOR_RESET" "$*"; }
+ok() { printf '%sok:%s %s\n' "$COLOR_GREEN" "$COLOR_RESET" "$*"; }
+warn() { printf '%swarn:%s %s\n' "$COLOR_YELLOW" "$COLOR_RESET" "$*" >&2; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+json_escape() {
+  jq -Rn --arg v "$1" '$v'
+}
+
+abs_path() {
+  local path="$1"
+  if [[ "$path" = /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s/%s\n' "$PWD" "$path"
+  fi
+}
+
+init_color() {
+  if [[ "$NO_COLOR_FLAG" -eq 1 || -n "${NO_COLOR:-}" || ! -t 1 ]]; then
+    return
+  fi
+  COLOR_RESET=$'\033[0m'
+  COLOR_DIM=$'\033[2m'
+  COLOR_RED=$'\033[31m'
+  COLOR_GREEN=$'\033[32m'
+  COLOR_YELLOW=$'\033[33m'
+  COLOR_BLUE=$'\033[34m'
+}
+
+parse_uint() {
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a non-negative integer"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -r|--rounds)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        parse_uint "rounds" "$2"
+        ROUNDS="$2"
+        shift 2
+        ;;
+      -m|--max-extra|--max-extra-rounds)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        parse_uint "max extra rounds" "$2"
+        MAX_EXTRA_ROUNDS="$2"
+        shift 2
+        ;;
+      -d|--workdir)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        WORKDIR="$2"
+        shift 2
+        ;;
+      --claude-model)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        CLAUDE_MODEL="$2"
+        CLAUDE_MODEL_SOURCE="arg"
+        shift 2
+        ;;
+      --codex-model)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        CODEX_MODEL="$2"
+        CODEX_MODEL_SOURCE="arg"
+        shift 2
+        ;;
+      --judge-model)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        JUDGE_MODEL="$2"
+        JUDGE_MODEL_SOURCE="arg"
+        shift 2
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        shift
+        ;;
+      --contract-check)
+        CONTRACT_CHECK=1
+        shift
+        ;;
+      --no-color)
+        NO_COLOR_FLAG=1
+        shift
+        ;;
+      --no-interactive)
+        NO_INTERACTIVE=1
+        shift
+        ;;
+      --interactive)
+        INTERACTIVE=1
+        shift
+        ;;
+      --no-judge)
+        NO_JUDGE=1
+        shift
+        ;;
+      --show)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        SHOW_WORKDIR="$2"
+        shift 2
+        ;;
+      --resume)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        RESUME_WORKDIR="$2"
+        shift 2
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --version)
+        printf '%s\n' "$VERSION"
+        exit 0
+        ;;
+      --)
+        shift
+        REQUIREMENT="${*:-}"
+        break
+        ;;
+      -*)
+        die "unknown option: $1"
+        ;;
+      *)
+        if [[ -n "$REQUIREMENT" ]]; then
+          REQUIREMENT="$REQUIREMENT $1"
+        else
+          REQUIREMENT="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
+init_model_defaults() {
+  if [[ -n "$ENV_AGENT_COMBAT_CLAUDE_MODEL" ]]; then
+    CLAUDE_MODEL="$ENV_AGENT_COMBAT_CLAUDE_MODEL"
+    CLAUDE_MODEL_SOURCE="env:AGENT_COMBAT_CLAUDE_MODEL"
+  elif [[ -n "$ENV_CLAUDE_MODEL" ]]; then
+    CLAUDE_MODEL="$ENV_CLAUDE_MODEL"
+    CLAUDE_MODEL_SOURCE="env:CLAUDE_MODEL"
+  fi
+
+  if [[ -n "$ENV_AGENT_COMBAT_CODEX_MODEL" ]]; then
+    CODEX_MODEL="$ENV_AGENT_COMBAT_CODEX_MODEL"
+    CODEX_MODEL_SOURCE="env:AGENT_COMBAT_CODEX_MODEL"
+  elif [[ -n "$ENV_CODEX_MODEL" ]]; then
+    CODEX_MODEL="$ENV_CODEX_MODEL"
+    CODEX_MODEL_SOURCE="env:CODEX_MODEL"
+  fi
+
+  if [[ -n "$ENV_AGENT_COMBAT_JUDGE_MODEL" ]]; then
+    JUDGE_MODEL="$ENV_AGENT_COMBAT_JUDGE_MODEL"
+    JUDGE_MODEL_SOURCE="env:AGENT_COMBAT_JUDGE_MODEL"
+  elif [[ "$CLAUDE_MODEL_SOURCE" != "default" ]]; then
+    JUDGE_MODEL="$CLAUDE_MODEL"
+    JUDGE_MODEL_SOURCE="derived:claude"
+  fi
+}
+
+load_local_config_defaults() {
+  local config=""
+  local candidate
+  for candidate in ".agent-combat/config.json" "agent-combat.json" "${XDG_CONFIG_HOME:-$HOME/.config}/agent-combat/config.json"; do
+    if [[ -f "$candidate" ]]; then
+      config="$candidate"
+      break
+    fi
+  done
+  [[ -n "$config" ]] || return 0
+
+  if [[ "$CLAUDE_MODEL_SOURCE" = "default" ]]; then
+    local value
+    value="$(jq -r '.claude_model // empty' "$config")"
+    if [[ -n "$value" ]]; then
+      CLAUDE_MODEL="$value"
+      CLAUDE_MODEL_SOURCE="config:$config"
+    fi
+  fi
+  if [[ "$CODEX_MODEL_SOURCE" = "default" ]]; then
+    local value
+    value="$(jq -r '.codex_model // empty' "$config")"
+    if [[ -n "$value" ]]; then
+      CODEX_MODEL="$value"
+      CODEX_MODEL_SOURCE="config:$config"
+    fi
+  fi
+  if [[ "$JUDGE_MODEL_SOURCE" = "default" ]]; then
+    local value
+    value="$(jq -r '.judge_model // empty' "$config")"
+    if [[ -n "$value" ]]; then
+      JUDGE_MODEL="$value"
+      JUDGE_MODEL_SOURCE="config:$config"
+    fi
+  fi
+}
+
+preflight_tools() {
+  local missing=()
+  local tool
+  for tool in jq claude codex; do
+    if ! have "$tool"; then
+      missing+=("$tool")
+    fi
+  done
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    die "missing required tool(s): ${missing[*]}"
+  fi
+}
+
+tool_version() {
+  local tool="$1"
+  case "$tool" in
+    claude)
+      claude --version 2>/dev/null | head -n 1
+      ;;
+    codex)
+      codex --version 2>/dev/null | sed '/^$/d' | tail -n 1
+      ;;
+    jq)
+      jq --version 2>/dev/null | head -n 1
+      ;;
+    gum)
+      gum --version 2>/dev/null | head -n 1
+      ;;
+  esac
+}
+
+default_workdir() {
+  date '+debate_%Y%m%d_%H%M%S'
+}
+
+write_config() {
+  local target="$1"
+  local origin_cwd="$2"
+  local phase="$3"
+  local status="$4"
+  local judge_enabled="true"
+  [[ "$NO_JUDGE" -eq 1 ]] && judge_enabled="false"
+
+  jq -n \
+    --arg origin_cwd "$origin_cwd" \
+    --arg workdir "$(abs_path "$target")" \
+    --arg phase "$phase" \
+    --arg status "$status" \
+    --arg claude_model "$CLAUDE_MODEL" \
+    --arg codex_model "$CODEX_MODEL" \
+    --arg judge_model "$JUDGE_MODEL" \
+    --arg claude_source "$CLAUDE_MODEL_SOURCE" \
+    --arg codex_source "$CODEX_MODEL_SOURCE" \
+    --arg judge_source "$JUDGE_MODEL_SOURCE" \
+    --arg claude_path "$(command -v claude)" \
+    --arg codex_path "$(command -v codex)" \
+    --arg jq_path "$(command -v jq)" \
+    --arg gum_path "$(command -v gum || true)" \
+    --arg claude_version "$(tool_version claude)" \
+    --arg codex_version "$(tool_version codex)" \
+    --arg jq_version "$(tool_version jq)" \
+    --arg gum_version "$(if have gum; then tool_version gum; fi)" \
+    --argjson rounds "$ROUNDS" \
+    --argjson max_extra "$MAX_EXTRA_ROUNDS" \
+    --argjson judge_enabled "$judge_enabled" \
+    '{
+      origin_cwd: $origin_cwd,
+      workdir: $workdir,
+      phase: $phase,
+      published_round: -1,
+      extra_rounds_used: 0,
+      agent1: {
+        name: "claude",
+        model: $claude_model,
+        model_source: $claude_source,
+        session_id: null
+      },
+      agent2: {
+        name: "codex",
+        model: $codex_model,
+        model_source: $codex_source,
+        session_id: null
+      },
+      judge: {
+        name: "claude",
+        model: $judge_model,
+        model_source: $judge_source,
+        session_id: null
+      },
+      harnesses: {
+        claude: {path: $claude_path, version: $claude_version},
+        codex: {path: $codex_path, version: $codex_version},
+        jq: {path: $jq_path, version: $jq_version},
+        gum: {
+          available: ($gum_path != ""),
+          path: (if $gum_path == "" then null else $gum_path end),
+          version: (if $gum_version == "" then null else $gum_version end)
+        }
+      },
+      rounds_planned: $rounds,
+      max_extra_rounds: $max_extra,
+      judge_enabled: $judge_enabled,
+      current_round: 0,
+      last_successful_artifact: null,
+      status: $status
+    }' >"$target/config.json"
+}
+
+log_event() {
+  local target="$1"
+  local event="$2"
+  local fields
+  if [[ $# -ge 3 ]]; then
+    fields="$3"
+  else
+    fields='{}'
+  fi
+  jq -cn \
+    --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg event "$event" \
+    --argjson fields "$fields" \
+    '{ts: $ts, event: $event} + $fields' >>"$target/events.jsonl"
+}
+
+print_config() {
+  local target="$1"
+  if have gum && [[ "$NO_INTERACTIVE" -eq 0 && -t 1 ]]; then
+    gum style --border normal --padding "1 2" --margin "1 0" \
+      "AGENT COMBAT" \
+      "Agent 1: Claude Code ($CLAUDE_MODEL)" \
+      "Agent 2: Codex CLI ($CODEX_MODEL)" \
+      "Judge: Claude Code ($JUDGE_MODEL)" \
+      "Rounds: $ROUNDS + up to $MAX_EXTRA_ROUNDS replay"
+  else
+    step "Agent Combat"
+    info "Agent 1: Claude Code ($CLAUDE_MODEL)"
+    info "Agent 2: Codex CLI ($CODEX_MODEL)"
+    info "Judge: Claude Code ($JUDGE_MODEL)"
+    info "Rounds: $ROUNDS + up to $MAX_EXTRA_ROUNDS replay"
+  fi
+  printf 'Requirement: %s\n' "$REQUIREMENT"
+  printf 'Workdir: %s\n' "$(abs_path "$target")"
+  jq . "$target/config.json"
+}
+
+maybe_confirm() {
+  if [[ "$NO_INTERACTIVE" -eq 1 || "$INTERACTIVE" -eq 0 || ! -t 0 || ! -t 1 ]]; then
+    return
+  fi
+  if have gum; then
+    gum confirm "Start debate?" || die "cancelled"
+  else
+    printf 'Start debate? [y/N] '
+    local answer
+    read -r answer
+    [[ "$answer" = "y" || "$answer" = "Y" || "$answer" = "yes" || "$answer" = "YES" ]] || die "cancelled"
+  fi
+}
+
+create_debate_skeleton() {
+  local target="$1"
+  [[ ! -e "$target" ]] || die "workdir already exists: $target"
+  mkdir -p "$target/rounds"
+  printf '%s\n' "$REQUIREMENT" >"$target/requirement.txt"
+  : >"$target/events.jsonl"
+  write_config "$target" "$PWD" "setup" "initialized"
+  log_event "$target" "debate.initialized" "$(jq -n --arg workdir "$(abs_path "$target")" --argjson rounds "$ROUNDS" '{workdir: $workdir, rounds_planned: $rounds}')"
+}
+
+show_debate() {
+  local target="$1"
+  [[ -d "$target" ]] || die "show workdir does not exist: $target"
+  [[ -f "$target/config.json" ]] || die "missing config.json in $target"
+  jq '{status, phase, published_round, current_round, rounds_planned, last_successful_artifact, agent1, agent2, judge}' "$target/config.json"
+  if [[ -f "$target/plan-final.md" ]]; then
+    printf '\nFinal plan: %s\n' "$target/plan-final.md"
+  fi
+}
+
+uuid() {
+  if have uuidgen; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    jq -rn 'now|tostring|@base64'
+  fi
+}
+
+contract_schema_file() {
+  local target="$1"
+  cat >"$target/schema.json" <<'JSON'
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": {"type": "string"},
+    "message": {"type": "string"}
+  },
+  "required": ["status", "message"]
+}
+JSON
+}
+
+extract_claude_result_json() {
+  local file="$1"
+  jq -e '
+    if (.structured_output | type) == "object" then
+      .structured_output
+    elif (.result | type) == "object" then
+      .result
+    elif (.result | type) == "string" then
+      (.result | fromjson)
+    else
+      empty
+    end
+    | select(.status == "ok" and (.message | type == "string"))
+  ' "$file" >/dev/null
+}
+
+extract_codex_session_id() {
+  local file="$1"
+  jq -r '
+    first(. | select(.type == "thread.started") | .thread_id? | select(type == "string")) // empty
+  ' "$file"
+}
+
+run_contract_check() {
+  preflight_tools
+
+  local root="${WORKDIR:-.agent-combat-contract/contract_$(date '+%Y%m%d_%H%M%S')}"
+  mkdir -p "$root"
+  contract_schema_file "$root"
+
+  local schema
+  schema="$(jq -c . "$root/schema.json")"
+
+  step "checking Claude structured output and explicit resume"
+  local claude_session
+  claude_session="$(uuid)"
+  claude -p \
+    --model "$CLAUDE_MODEL" \
+    --session-id "$claude_session" \
+    --permission-mode plan \
+    --tools "" \
+    --output-format json \
+    --json-schema "$schema" \
+    'Use the structured output schema. Set status to "ok" and message to "fresh".' \
+    >"$root/claude-fresh.json"
+
+  jq -e --arg id "$claude_session" '.session_id == $id or .sessionId == $id' "$root/claude-fresh.json" >/dev/null \
+    || contract_die "Claude did not report the explicit session id"
+  extract_claude_result_json "$root/claude-fresh.json" \
+    || contract_die "Claude structured result did not match expected JSON envelope"
+
+  claude -p \
+    --model "$CLAUDE_MODEL" \
+    --resume "$claude_session" \
+    --permission-mode plan \
+    --tools "" \
+    --output-format json \
+    --json-schema "$schema" \
+    'Use the structured output schema. Set status to "ok" and message to "resume".' \
+    >"$root/claude-resume.json"
+
+  jq -e --arg id "$claude_session" '.session_id == $id or .sessionId == $id' "$root/claude-resume.json" >/dev/null \
+    || contract_die "Claude explicit resume did not keep the expected session id"
+  extract_claude_result_json "$root/claude-resume.json" \
+    || contract_die "Claude resume structured result was not parseable"
+  ok "Claude contract recorded in $root"
+
+  step "checking Codex structured output, output file, JSONL session id, and explicit resume"
+  if ! codex exec \
+      --model "$CODEX_MODEL" \
+      --sandbox read-only \
+      --skip-git-repo-check \
+      --json \
+      --output-schema "$root/schema.json" \
+      --output-last-message "$root/codex-fresh-last.json" \
+      'Return {"status":"ok","message":"fresh"} as the final response. Do not run commands.' \
+      </dev/null \
+      >"$root/codex-fresh.jsonl" \
+      2>"$root/codex-fresh.stderr"; then
+    sed -n '1,80p' "$root/codex-fresh.stderr" >&2
+    contract_die "Codex fresh structured call failed"
+  fi
+
+  [[ -s "$root/codex-fresh-last.json" ]] || contract_die "Codex did not write --output-last-message"
+  jq -e '.status == "ok" and (.message | type == "string")' "$root/codex-fresh-last.json" >/dev/null \
+    || contract_die "Codex output-last-message did not match schema"
+
+  local codex_session
+  codex_session="$(extract_codex_session_id "$root/codex-fresh.jsonl")"
+  [[ -n "$codex_session" ]] || contract_die "Codex JSONL did not expose a session id"
+  printf '%s\n' "$codex_session" >"$root/codex-session-id.txt"
+
+  if ! codex exec resume "$codex_session" \
+      --model "$CODEX_MODEL" \
+      --skip-git-repo-check \
+      --json \
+      --output-last-message "$root/codex-resume-last.txt" \
+      'Reply with exactly: resumed' \
+      </dev/null \
+      >"$root/codex-resume.jsonl" \
+      2>"$root/codex-resume.stderr"; then
+    sed -n '1,80p' "$root/codex-resume.stderr" >&2
+    contract_die "Codex explicit resume failed"
+  fi
+
+  grep -q 'resumed' "$root/codex-resume-last.txt" \
+    || contract_die "Codex explicit resume did not produce expected deterministic output"
+  jq -e --arg id "$codex_session" 'select(.type == "thread.started") | .thread_id == $id' "$root/codex-resume.jsonl" >/dev/null \
+    || contract_die "Codex explicit resume did not report the expected thread id"
+  ok "Codex contract recorded in $root"
+
+  jq -n \
+    --arg root "$(abs_path "$root")" \
+    --arg claude_session "$claude_session" \
+    --arg codex_session "$codex_session" \
+    --arg claude_model "$CLAUDE_MODEL" \
+    --arg codex_model "$CODEX_MODEL" \
+    '{
+      status: "ok",
+      root: $root,
+      claude: {model: $claude_model, session_id: $claude_session},
+      codex: {model: $codex_model, session_id: $codex_session}
+    }' >"$root/contract-summary.json"
+  jq . "$root/contract-summary.json"
+}
+
+main() {
+  init_model_defaults
+  parse_args "$@"
+  init_color
+  preflight_tools
+  load_local_config_defaults
+
+  if [[ -n "$SHOW_WORKDIR" ]]; then
+    show_debate "$SHOW_WORKDIR"
+    exit 0
+  fi
+
+  if [[ "$CONTRACT_CHECK" -eq 1 ]]; then
+    run_contract_check
+    exit 0
+  fi
+
+  if [[ -n "$RESUME_WORKDIR" ]]; then
+    die "resume is reserved but not implemented yet"
+  fi
+
+  [[ -n "$REQUIREMENT" ]] || die "missing requirement"
+
+  local target
+  target="${WORKDIR:-$(default_workdir)}"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    local tmp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    mkdir -p "$tmp/dry/rounds"
+    write_config "$tmp/dry" "$PWD" "dry-run" "dry-run"
+    step "Dry run: no agent calls will be made"
+    print_config "$tmp/dry"
+    exit 0
+  fi
+
+  create_debate_skeleton "$target"
+  print_config "$target"
+  maybe_confirm
+  warn "round execution is not implemented yet; created debate skeleton only"
+}
+
+main "$@"
