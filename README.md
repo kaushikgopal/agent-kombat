@@ -195,6 +195,16 @@ Verify the install:
 agent-kombat --help
 ```
 
+## Bundled Plan Skill
+
+This repo includes a complete Agent Skills-compatible planning skill at
+`skills/plan`. The directory is self-contained: `SKILL.md`, `agents/`,
+`references/`, and `scripts/` live together so the skill can be copied or
+symlinked into another skills root as one directory.
+
+Agent Kombat does not call the bundled skill yet. The stable integration point
+for future Round 0 work is `skills/plan/scripts/plan_core.py`.
+
 ## Notes
 
 By default, Agent Kombat runs Round 0 independent planning, then 3 debate

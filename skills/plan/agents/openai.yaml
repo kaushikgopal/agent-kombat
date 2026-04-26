@@ -1,0 +1,8 @@
+interface:
+  display_name: "Plan"
+  short_description: "Turn rough inputs into durable plan notes, with context fan-out for complex software work."
+  default_prompt: "Create or refine a durable plan note for this request. Route automatically and use context fan-out when the software work is large, ambiguous, or risky."
+  brand_color: "#1F4E79"
+
+policy:
+  allow_implicit_invocation: true
