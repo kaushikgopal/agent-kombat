@@ -3,11 +3,17 @@
 Use the classifier first:
 
 ```bash
-python3 skills/plan/scripts/plan_core.py classify --request "$ARGUMENTS"
+python3 "$SKILL_DIR/scripts/plan_core.py" classify \
+  --repo-root "$PWD" \
+  --plans-dir "$PWD/.agents/plans" \
+  --request "$ARGUMENTS"
 ```
 
 For file-backed requests, use `--request-file path/to/request.txt` instead of
 `--request`.
+
+`$PWD` must be the repo where the resulting `.agents/plans` note should live.
+`$SKILL_DIR` must resolve to this skill package directory.
 
 ## Route Selection
 

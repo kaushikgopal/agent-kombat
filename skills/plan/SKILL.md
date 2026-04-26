@@ -22,7 +22,10 @@ metadata:
 Run the classifier helper before doing anything else:
 
 ```bash
-python3 skills/plan/scripts/plan_core.py classify --request "$ARGUMENTS"
+python3 "$SKILL_DIR/scripts/plan_core.py" classify \
+  --repo-root "$PWD" \
+  --plans-dir "$PWD/.agents/plans" \
+  --request "$ARGUMENTS"
 ```
 
 The classifier returns:
@@ -45,7 +48,10 @@ The classifier returns:
 For a file-backed request, use:
 
 ```bash
-python3 skills/plan/scripts/plan_core.py classify --request-file path/to/request.txt
+python3 "$SKILL_DIR/scripts/plan_core.py" classify \
+  --repo-root "$PWD" \
+  --plans-dir "$PWD/.agents/plans" \
+  --request-file path/to/request.txt
 ```
 
 If `needs_clarification` is `true`, ask `clarification_prompt` and stop.
@@ -69,7 +75,7 @@ Prompt adapters such as Agent Kombat should own their outer prompt wrapper and
 splice in shared planning instructions from:
 
 ```bash
-python3 skills/plan/scripts/plan_core.py render-instructions \
+python3 "$SKILL_DIR/scripts/plan_core.py" render-instructions \
   --classification classification.json
 ```
 
@@ -142,7 +148,7 @@ Then summarize only the load-bearing takeaways into the plan note's
 Before calling a plan note complete, validate it:
 
 ```bash
-python3 skills/plan/scripts/plan_core.py validate --plan-file "$PLAN_PATH"
+python3 "$SKILL_DIR/scripts/plan_core.py" validate --plan-file "$PLAN_PATH"
 ```
 
 Validation is intentionally lenient: missing optional sections warn, while
@@ -151,7 +157,8 @@ checkbox structure fail.
 
 ## Writing Rules
 
-- Always write plan notes under `.agents/plans/`.
+- Always write plan notes under `.agents/plans/` in the repo where the skill
+  was invoked, not in the skill package directory.
 - Use the classifier's `target_path`.
 - Keep file paths inside the plan repo-relative.
 - Preserve existing completed work when refining a plan.

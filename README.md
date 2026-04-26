@@ -202,6 +202,10 @@ This repo includes a complete Agent Skills-compatible planning skill at
 `references/`, and `scripts/` live together so the skill can be copied or
 symlinked into another skills root as one directory.
 
+The skill writes plan notes relative to the directory where it is invoked. If
+`skills/plan` is symlinked into another repo, run the skill from that repo so
+new plans land under that repo's `.agents/plans/`.
+
 Agent Kombat does not call the bundled skill yet. The stable integration point
 for future Round 0 work is `skills/plan/scripts/plan_core.py`.
 
