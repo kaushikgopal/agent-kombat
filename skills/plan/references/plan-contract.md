@@ -9,6 +9,7 @@ by `work`.
 - If repo guidance recommends another local plans directory, use that
 - If no repo-local plans directory is available, use the classifier's XDG state
   fallback
+- Create the selected plans directory before writing the plan note
 - Filenames use `YYYY-MM-DD-<kebab-slug>-plan.md`
 - Add `-NN` only when multiple plans land on the same day
 - Paths inside plan notes are repo-relative, never absolute, even when the note

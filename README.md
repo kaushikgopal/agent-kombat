@@ -174,6 +174,7 @@ Validate local CLI contracts:
 
 - `bash`
 - `jq`
+- `python3`
 - `claude`
 - `codex`
 - Optional: `gum` for the guided terminal UI and in-progress status panels
@@ -208,8 +209,10 @@ directory from guidance files, then an XDG state fallback. If `skills/plan` is
 symlinked into another repo, run the skill from that repo so the local project
 controls where new plans land.
 
-Agent Kombat does not call the bundled skill yet. The stable integration point
-for future Round 0 work is `skills/plan/scripts/plan_core.py`.
+Agent Kombat uses `skills/plan/scripts/plan_core.py` during Round 0 to classify
+the requirement and inject the shared plan contract into both independent
+planning prompts. It does not invoke the skill adapter directly, so Claude and
+Codex still create real sessions that later debate rounds can resume.
 
 ## Notes
 

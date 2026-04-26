@@ -3,6 +3,16 @@ set -euo pipefail
 
 VERSION="0.1.0"
 
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR_CANDIDATE="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" = /* ]] || SCRIPT_SOURCE="$SCRIPT_DIR_CANDIDATE/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+PLAN_SKILL_ROOT="${AGENT_KOMBAT_PLAN_SKILL_ROOT:-$SCRIPT_DIR/skills/plan}"
+PLAN_CORE_PATH="${AGENT_KOMBAT_PLAN_CORE_PATH:-$PLAN_SKILL_ROOT/scripts/plan_core.py}"
+
 ENV_CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 ENV_CODEX_MODEL="${CODEX_MODEL:-}"
 ENV_AGENT_KOMBAT_CLAUDE_MODEL="${AGENT_KOMBAT_CLAUDE_MODEL:-}"
@@ -451,7 +461,7 @@ resolve_derived_judge_model() {
 preflight_tools() {
   local missing=()
   local tool
-  for tool in jq claude codex; do
+  for tool in jq python3 claude codex; do
     if ! have "$tool"; then
       missing+=("$tool")
     fi
@@ -683,6 +693,7 @@ JSON
 
 build_round0_prompt() {
   local requirement_file="$1"
+  local instructions_file="$2"
   cat <<'PROMPT'
 You are Agent Kombat participant 1 of 2.
 
@@ -695,6 +706,14 @@ Planning-only restrictions:
 - Do not run commands.
 - Do not ask for permission to execute work.
 - Treat this as plan generation, not implementation.
+
+Use the shared planning instructions below to shape your plan.
+
+---BEGIN SHARED PLANNING INSTRUCTIONS---
+PROMPT
+  cat "$instructions_file"
+  cat <<'PROMPT'
+---END SHARED PLANNING INSTRUCTIONS---
 
 Your response must match the provided structured output schema. Put the full
 Markdown plan in `plan_markdown`.
@@ -710,6 +729,7 @@ PROMPT
 
 build_round0_codex_prompt() {
   local requirement_file="$1"
+  local instructions_file="$2"
   cat <<'PROMPT'
 You are Agent Kombat participant 2 of 2.
 
@@ -722,6 +742,14 @@ Planning-only restrictions:
 - Do not run commands.
 - Do not ask for permission to execute work.
 - Treat this as plan generation, not implementation.
+
+Use the shared planning instructions below to shape your plan.
+
+---BEGIN SHARED PLANNING INSTRUCTIONS---
+PROMPT
+  cat "$instructions_file"
+  cat <<'PROMPT'
+---END SHARED PLANNING INSTRUCTIONS---
 
 Your final response must be JSON matching the provided output schema. Put the
 full Markdown plan in `plan_markdown`.
@@ -764,6 +792,49 @@ build_objections_json() {
     return
   fi
   jq -s '.' "${files[@]}"
+}
+
+prepare_round0_plan_context() {
+  local target="$1"
+  local origin_cwd="$2"
+  local requirement_path
+  local classification_file="$target/rounds/r0-plan-classification.json"
+  local instructions_file="$target/rounds/r0-plan-instructions.md"
+
+  [[ -f "$PLAN_CORE_PATH" ]] || die "missing bundled plan core: $PLAN_CORE_PATH"
+  requirement_path="$(abs_path "$target/requirement.txt")"
+
+  if ! python3 "$PLAN_CORE_PATH" classify \
+    --repo-root "$origin_cwd" \
+    --skill-root "$PLAN_SKILL_ROOT" \
+    --request-file "$requirement_path" \
+    >"$classification_file" 2>"$target/rounds/r0-plan-classification.stderr"; then
+    sed -n '1,80p' "$target/rounds/r0-plan-classification.stderr" >&2
+    die "Round 0 plan classification failed"
+  fi
+
+  if jq -e '.needs_clarification == true' "$classification_file" >/dev/null; then
+    warn "plan classifier requested clarification: $(jq -r '.clarification_prompt' "$classification_file")"
+  fi
+
+  if ! python3 "$PLAN_CORE_PATH" render-instructions \
+    --skill-root "$PLAN_SKILL_ROOT" \
+    --classification "$classification_file" \
+    >"$instructions_file" 2>"$target/rounds/r0-plan-instructions.stderr"; then
+    sed -n '1,80p' "$target/rounds/r0-plan-instructions.stderr" >&2
+    die "Round 0 plan instruction rendering failed"
+  fi
+
+  log_event "$target" "plan.classified" "$(jq -c '{
+    round: "r0",
+    action,
+    kind,
+    mode,
+    needs_clarification,
+    plans_dir_source,
+    classification_path: "rounds/r0-plan-classification.json",
+    instructions_path: "rounds/r0-plan-instructions.md"
+  }' "$classification_file")"
 }
 
 build_judge_prompt() {
@@ -1002,12 +1073,13 @@ run_claude_round0() {
   local origin_cwd="$2"
   local schema_json="$3"
   local prompt_file="$target/rounds/r0-agent1.prompt.txt"
+  local instructions_file="$target/rounds/r0-plan-instructions.md"
   local raw_file="$target/rounds/r0-agent1.raw.json"
   local plan_file="$target/rounds/r0-agent1.md"
   local session_id
 
   session_id="$(uuid)"
-  build_round0_prompt "$target/requirement.txt" >"$prompt_file"
+  build_round0_prompt "$target/requirement.txt" "$instructions_file" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent1 --arg round r0 '{agent: $agent, round: $round}')"
   progress_panel \
@@ -1151,12 +1223,13 @@ run_codex_round0() {
   local origin_cwd="$2"
   local schema_file="$3"
   local prompt_file="$target/rounds/r0-agent2.prompt.txt"
+  local instructions_file="$target/rounds/r0-plan-instructions.md"
   local jsonl_file="$target/rounds/r0-agent2.jsonl"
   local structured_file="$target/rounds/r0-agent2.structured.json"
   local plan_file="$target/rounds/r0-agent2.md"
   local session_id
 
-  build_round0_codex_prompt "$target/requirement.txt" >"$prompt_file"
+  build_round0_codex_prompt "$target/requirement.txt" "$instructions_file" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent2 --arg round r0 '{agent: $agent, round: $round}')"
   progress_panel \
@@ -1253,6 +1326,10 @@ write_round0_manifest() {
     --arg cwd "$origin_cwd" \
     --arg requirement "requirement.txt" \
     --arg requirement_sha "$(sha256_file "$target/requirement.txt")" \
+    --arg plan_classification "rounds/r0-plan-classification.json" \
+    --arg plan_instructions "rounds/r0-plan-instructions.md" \
+    --arg plan_classification_sha "$(sha256_file "$target/rounds/r0-plan-classification.json")" \
+    --arg plan_instructions_sha "$(sha256_file "$target/rounds/r0-plan-instructions.md")" \
     --arg agent1_prompt "rounds/r0-agent1.prompt.txt" \
     --arg agent2_prompt "rounds/r0-agent2.prompt.txt" \
     --arg agent1_prompt_sha "$(sha256_file "$target/rounds/r0-agent1.prompt.txt")" \
@@ -1268,6 +1345,12 @@ write_round0_manifest() {
       kind: "independent_planning",
       origin_cwd: $cwd,
       requirement: {path: $requirement, sha256: $requirement_sha},
+      plan_core: {
+        classification_path: $plan_classification,
+        classification_sha256: $plan_classification_sha,
+        instructions_path: $plan_instructions,
+        instructions_sha256: $plan_instructions_sha
+      },
       agents: {
         agent1: {
           name: "claude",
@@ -1402,6 +1485,7 @@ run_round0() {
   update_config "$target" '.phase = "round" | .status = "running" | .current_round = 0'
   log_event "$target" "round.started" "$(jq -n --arg round r0 '{round: $round}')"
 
+  prepare_round0_plan_context "$target" "$origin_cwd"
   run_claude_round0 "$target" "$origin_cwd" "$schema_json"
   run_codex_round0 "$target" "$origin_cwd" "$schema_file"
 

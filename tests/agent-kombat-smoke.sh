@@ -17,6 +17,25 @@ jq -e --arg dir "$TMP_DIR/plan-local/.agents/plans" \
   '.plans_dir == $dir and .plans_dir_source == "existing-local"' \
   "$TMP_DIR/plan-local.json" >/dev/null
 
+mkdir -p "$TMP_DIR/plan-request-file"
+printf '%s\n' "fix auth bug" >"$TMP_DIR/plan-request-file/request.txt"
+(cd "$TMP_DIR" && python3 "$PLAN_CORE" classify \
+  --repo-root "$TMP_DIR/plan-request-file" \
+  --request-file request.txt) >"$TMP_DIR/plan-request-file.json"
+jq -e '.kind == "software" and .request == "fix auth bug"' \
+  "$TMP_DIR/plan-request-file.json" >/dev/null
+
+python3 "$PLAN_CORE" classify \
+  --repo-root "$TMP_DIR/plan-local" \
+  --skill-root "$TMP_DIR/missing-skill-root" \
+  --request "fix auth bug" >"$TMP_DIR/plan-stale-skill-root.json"
+python3 "$PLAN_CORE" render-instructions \
+  --skill-root "$ROOT_DIR/skills/plan" \
+  --classification "$TMP_DIR/plan-stale-skill-root.json" \
+  >"$TMP_DIR/plan-instructions.md"
+grep -q "Shared Planning Instructions" "$TMP_DIR/plan-instructions.md"
+grep -q "If an adapter writes the target path, it must create the selected plans directory first" "$TMP_DIR/plan-instructions.md"
+
 mkdir -p "$TMP_DIR/plan-guidance"
 printf '%s\n' 'Use `docs/plans` as the recommended directory for plans.' \
   >"$TMP_DIR/plan-guidance/AGENTS.md"
@@ -384,12 +403,18 @@ PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-run-args.log" "$ROOT_
 test -f "$TMP_DIR/run/rounds/r0.json"
 test -f "$TMP_DIR/run/rounds/r1.json"
 test -f "$TMP_DIR/run/rounds/r1-objections.json"
+test -f "$TMP_DIR/run/rounds/r0-plan-classification.json"
+test -f "$TMP_DIR/run/rounds/r0-plan-instructions.md"
 test -f "$TMP_DIR/run/plan-agent1.md"
 test -f "$TMP_DIR/run/plan-agent2.md"
 test -f "$TMP_DIR/run/plan-final.md"
+jq -e '.kind == "software" and .mode == "feature"' "$TMP_DIR/run/rounds/r0-plan-classification.json" >/dev/null
+grep -q "Shared Planning Instructions" "$TMP_DIR/run/rounds/r0-agent1.prompt.txt"
+grep -q "Shared Planning Instructions" "$TMP_DIR/run/rounds/r0-agent2.prompt.txt"
 jq -e '.published_round == 1 and .agent1.session_id != null and .agent2.session_id == "fake-codex-thread"' "$TMP_DIR/run/config.json" >/dev/null
 jq -e '.phase == "done" and .status == "done" and .last_successful_artifact == "plan-final.md"' "$TMP_DIR/run/config.json" >/dev/null
 jq -e '.published == true and .agents.agent1.parse_status == "ok" and .agents.agent2.parse_status == "ok"' "$TMP_DIR/run/rounds/r0.json" >/dev/null
+jq -e '.plan_core.classification_path == "rounds/r0-plan-classification.json" and .plan_core.instructions_path == "rounds/r0-plan-instructions.md"' "$TMP_DIR/run/rounds/r0.json" >/dev/null
 jq -e '.published == true and .kind == "debate" and .agents.agent1.parse_status == "ok" and .agents.agent2.parse_status == "ok"' "$TMP_DIR/run/rounds/r1.json" >/dev/null
 jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DIR/run/rounds/r1-objections.json" >/dev/null
 grep -q "Claude Revised Plan" "$TMP_DIR/run/plan-agent1.md"

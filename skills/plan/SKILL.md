@@ -160,6 +160,7 @@ checkbox structure fail.
   If none exists, use a repo-local recommended plans directory from guidance
   files. If there is no repo-local recommendation, use the classifier's XDG
   state fallback.
+- Before writing, create the classifier's `plans_dir` if it does not exist.
 - Use the classifier's `target_path`.
 - Keep file paths inside the plan repo-relative.
 - Preserve existing completed work when refining a plan.

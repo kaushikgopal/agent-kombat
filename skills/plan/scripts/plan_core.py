@@ -39,7 +39,7 @@ CODE_PATH_RE = re.compile(
 SOFTWARE_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("refactor", re.compile(r"\b(refactor|rewrite|cleanup|simplify|rename|extract)\b", re.IGNORECASE)),
     ("fix", re.compile(r"\b(bug|fix|regression|error|stack trace|exception|crash|flaky)\b", re.IGNORECASE)),
-    ("feature", re.compile(r"\b(feature|implement|build|add|support|auth|endpoint|migration|cli)\b", re.IGNORECASE)),
+    ("feature", re.compile(r"\b(feature|implement|implementation|build|add|support|auth|endpoint|migration|cli)\b", re.IGNORECASE)),
     ("investigation", re.compile(r"\b(investigate|diagnose|root cause|trace|why is|audit)\b", re.IGNORECASE)),
 )
 
@@ -55,7 +55,7 @@ UNIVERSAL_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
 
 SOFTWARE_HINTS = re.compile(
     r"\b(repo|repository|code|codebase|test|tests|lint|compile|branch|diff|pr|issue|"
-    r"api|library|framework|sdk|module|package|cli)\b",
+    r"api|library|framework|sdk|module|package|cli|implementation)\b",
     re.IGNORECASE,
 )
 UNIVERSAL_HINTS = re.compile(
@@ -512,12 +512,16 @@ def classify_request(
     }
 
 
-def request_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Tuple[str, str, Optional[Path]]:
+def request_from_args(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    repo_root: Path,
+) -> Tuple[str, str, Optional[Path]]:
     request_text = args.request or ""
     request_file: Optional[Path] = None
 
     if args.request_file:
-        request_file = resolve_path(args.request_file, Path.cwd())
+        request_file = resolve_path(args.request_file, repo_root)
         if request_text or args.request_parts:
             parser.error("--request-file cannot be combined with --request or positional request text")
         request_text = read_text(request_file).strip()
@@ -536,7 +540,7 @@ def command_classify(args: argparse.Namespace, parser: argparse.ArgumentParser) 
     repo_root = resolve_path(args.repo_root, Path.cwd())
     plans_dir, plans_dir_source = resolve_plans_dir(args.plans_dir, repo_root)
     skill_root = resolve_path(args.skill_root, Path.cwd())
-    request_text, request_display, request_file = request_from_args(args, parser)
+    request_text, request_display, request_file = request_from_args(args, parser, repo_root)
     payload = classify_request(
         request_text=request_text,
         request_display=request_display,
@@ -556,10 +560,10 @@ def render_instructions(classification: Dict[str, Any], skill_root: Path) -> str
     mode = classification.get("mode")
     action = classification.get("action")
     needs_clarification = classification.get("needs_clarification")
-    contract_path = Path(str(classification.get("contract_path") or skill_root / "references" / "plan-contract.md"))
-    routing_path = Path(str(classification.get("routing_path") or skill_root / "references" / "routing.md"))
-    template_value = classification.get("template_path")
-    template_path = Path(str(template_value)) if template_value else None
+    contract_path = skill_root / "references" / "plan-contract.md"
+    routing_path = skill_root / "references" / "routing.md"
+    template_value = template_path_for(str(kind) if kind else None, skill_root)
+    template_path = Path(template_value) if template_value else None
 
     parts = [
         "# Shared Planning Instructions",
@@ -587,6 +591,7 @@ def render_instructions(classification: Dict[str, Any], skill_root: Path) -> str
         [
             "Produce a durable plan note, not pseudocode and not an execution log.",
             "Keep repo paths repo-relative. Preserve completed work when refining an existing plan.",
+            "If an adapter writes the target path, it must create the selected plans directory first.",
             "",
             "## Plan Contract",
             "",
