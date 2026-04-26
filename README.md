@@ -7,6 +7,25 @@ The script is intentionally small: one shell file, filesystem artifacts, and
 explicit session IDs. It does not run a server or hide the transcript in an
 opaque database.
 
+## Quick Start
+
+Run a cheap one-round planning debate:
+
+```sh
+./agent-combat --no-judge -r 1 "build a tiny CLI that prints hello"
+```
+
+Agent Combat writes a timestamped `debate_*` directory with each agent's plan,
+the debate transcript artifacts, and a final synthesized plan:
+
+```sh
+./agent-combat --show debate_YYYYMMDD_HHMMSS
+cat debate_YYYYMMDD_HHMMSS/plan-final.md
+```
+
+Use `--dry-run` first if you want to inspect the selected models and output
+directory without calling either agent.
+
 ## Requirements
 
 - `bash`
