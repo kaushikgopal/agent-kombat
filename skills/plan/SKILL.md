@@ -3,8 +3,7 @@ name: plan
 description: >-
   Create or refine a durable plan note for software and non-software work.
   Use when the user has an idea, bug, issue, transcript, screenshot, or rough
-  prompt that should become a structured plan under .agents/plans before
-  execution begins.
+  prompt that should become a structured plan note before execution begins.
 argument-hint: >-
   plan this auth bug | plan this meeting transcript into a proposal | plan
   .agents/plans/2026-04-25-auth-rewrite-plan.md
@@ -12,7 +11,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 user-invocable: true
 metadata:
   author: kaushik-gopal
-  version: "0.3"
+  version: "0.4"
 ---
 
 # Plan
@@ -24,7 +23,6 @@ Run the classifier helper before doing anything else:
 ```bash
 python3 "$SKILL_DIR/scripts/plan_core.py" classify \
   --repo-root "$PWD" \
-  --plans-dir "$PWD/.agents/plans" \
   --request "$ARGUMENTS"
 ```
 
@@ -36,6 +34,8 @@ The classifier returns:
 - `existing_plan_path` - existing plan file when refining
 - `target_path` - where the plan should be written
 - `plans_dir` - directory used for new plan notes
+- `plans_dir_source` - `existing-local`, `repo-guidance`, `xdg-state`, or
+  `explicit`
 - `contract_path` - durable plan contract reference
 - `routing_path` - routing and research rules reference
 - `template_path` - template reference to follow
@@ -50,7 +50,6 @@ For a file-backed request, use:
 ```bash
 python3 "$SKILL_DIR/scripts/plan_core.py" classify \
   --repo-root "$PWD" \
-  --plans-dir "$PWD/.agents/plans" \
   --request-file path/to/request.txt
 ```
 
@@ -157,8 +156,10 @@ checkbox structure fail.
 
 ## Writing Rules
 
-- Always write plan notes under `.agents/plans/` in the repo where the skill
-  was invoked, not in the skill package directory.
+- Prefer an existing `.agents/plans/` in the repo where the skill was invoked.
+  If none exists, use a repo-local recommended plans directory from guidance
+  files. If there is no repo-local recommendation, use the classifier's XDG
+  state fallback.
 - Use the classifier's `target_path`.
 - Keep file paths inside the plan repo-relative.
 - Preserve existing completed work when refining a plan.

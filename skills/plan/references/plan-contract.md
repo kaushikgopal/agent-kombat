@@ -5,10 +5,14 @@ by `work`.
 
 ## Storage
 
-- Plans live under `.agents/plans/`
+- Prefer repo-local `.agents/plans/` when it exists
+- If repo guidance recommends another local plans directory, use that
+- If no repo-local plans directory is available, use the classifier's XDG state
+  fallback
 - Filenames use `YYYY-MM-DD-<kebab-slug>-plan.md`
 - Add `-NN` only when multiple plans land on the same day
-- Paths inside plan notes are repo-relative, never absolute
+- Paths inside plan notes are repo-relative, never absolute, even when the note
+  itself is stored outside the repo
 
 ## Frontmatter
 

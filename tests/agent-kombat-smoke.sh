@@ -6,6 +6,34 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 bash -n "$ROOT_DIR/agent-kombat"
+python3 -m py_compile "$ROOT_DIR/skills/plan/scripts/plan_core.py"
+
+PLAN_CORE="$ROOT_DIR/skills/plan/scripts/plan_core.py"
+
+mkdir -p "$TMP_DIR/plan-local/.agents/plans"
+python3 "$PLAN_CORE" classify --repo-root "$TMP_DIR/plan-local" --request "fix auth bug" \
+  >"$TMP_DIR/plan-local.json"
+jq -e --arg dir "$TMP_DIR/plan-local/.agents/plans" \
+  '.plans_dir == $dir and .plans_dir_source == "existing-local"' \
+  "$TMP_DIR/plan-local.json" >/dev/null
+
+mkdir -p "$TMP_DIR/plan-guidance"
+printf '%s\n' 'Use `docs/plans` as the recommended directory for plans.' \
+  >"$TMP_DIR/plan-guidance/AGENTS.md"
+python3 "$PLAN_CORE" classify --repo-root "$TMP_DIR/plan-guidance" --request "fix auth bug" \
+  >"$TMP_DIR/plan-guidance.json"
+jq -e --arg dir "$TMP_DIR/plan-guidance/docs/plans" \
+  '.plans_dir == $dir and .plans_dir_source == "repo-guidance"' \
+  "$TMP_DIR/plan-guidance.json" >/dev/null
+
+mkdir -p "$TMP_DIR/plan-xdg"
+XDG_STATE_HOME="$TMP_DIR/xdg-state" python3 "$PLAN_CORE" classify \
+  --repo-root "$TMP_DIR/plan-xdg" \
+  --request "fix auth bug" \
+  >"$TMP_DIR/plan-xdg.json"
+jq -e --arg prefix "$TMP_DIR/xdg-state/agent-skills/plan/plan-xdg-" \
+  '.plans_dir_source == "xdg-state" and (.plans_dir | startswith($prefix)) and (.plans_dir | endswith("/plans"))' \
+  "$TMP_DIR/plan-xdg.json" >/dev/null
 
 "$ROOT_DIR/agent-kombat" --dry-run --no-interactive --workdir "$TMP_DIR/dry" "build a rate limiter" >/tmp/agent-kombat-dry.out
 test ! -e "$TMP_DIR/dry"

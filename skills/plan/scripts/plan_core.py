@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import shlex
 import sys
@@ -112,6 +114,12 @@ STOPWORDS = {
 SOURCE_REFERENCE_HINTS = re.compile(
     r"\b(this|these)\s+(transcript|screenshot|screenshots|notes|doc|document|"
     r"meeting transcript|recording)\b",
+    re.IGNORECASE,
+)
+GUIDANCE_FILES = ("AGENTS.md", "CLAUDE.md", "README.md")
+BACKTICK_PLAN_PATH_RE = re.compile(r"`([^`]*plans[^`]*)`", re.IGNORECASE)
+PLAIN_PLAN_PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:\.{1,2}/)?(?:[\w.-]+/)*[\w.-]*plans[\w.-]*(?:/[\w.-]+)*)/?(?![\w/.-])",
     re.IGNORECASE,
 )
 
@@ -345,6 +353,12 @@ def slugify(request_text: str, fallback: str) -> str:
     return slug or fallback
 
 
+def path_slug(path_text: str, fallback: str) -> str:
+    words = re.findall(r"[a-z0-9]+", path_text.lower())
+    slug = "-".join(words).strip("-")
+    return slug or fallback
+
+
 def next_target_path(plans_dir: Path, slug: str) -> Path:
     today = date.today().isoformat()
     base = plans_dir / f"{today}-{slug}-plan.md"
@@ -357,6 +371,73 @@ def next_target_path(plans_dir: Path, slug: str) -> Path:
             return candidate
 
     return plans_dir / f"{today}-{slug}-plan-overflow.md"
+
+
+def normalize_recommended_plans_path(raw_path: str) -> Optional[Path]:
+    cleaned = raw_path.strip().strip("'\"").rstrip("/")
+    if not cleaned or "://" in cleaned or cleaned.startswith(("~", "$")):
+        return None
+
+    path = Path(cleaned)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    if "plans" not in cleaned.lower():
+        return None
+    return path
+
+
+def recommended_plans_dir(repo_root: Path) -> Optional[Path]:
+    for filename in GUIDANCE_FILES:
+        guidance_file = repo_root / filename
+        if not guidance_file.is_file():
+            continue
+
+        for line in read_text(guidance_file).splitlines():
+            lowered = line.lower()
+            if "plan" not in lowered:
+                continue
+
+            candidates = [match.group(1) for match in BACKTICK_PLAN_PATH_RE.finditer(line)]
+            if any(word in lowered for word in ("directory", "dir", "path")):
+                candidates.extend(match.group(1) for match in PLAIN_PLAN_PATH_RE.finditer(line))
+            for candidate in candidates:
+                relative_path = normalize_recommended_plans_path(candidate)
+                if relative_path:
+                    return repo_root / relative_path
+
+    return None
+
+
+def xdg_state_home() -> Path:
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if state_home:
+        return Path(state_home).expanduser()
+    return Path.home() / ".local" / "state"
+
+
+def repo_state_slug(repo_root: Path) -> str:
+    resolved = str(repo_root.resolve())
+    name = path_slug(repo_root.name, "repo")
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
+    return f"{name}-{digest}"
+
+
+def default_plans_dir(repo_root: Path) -> Tuple[Path, str]:
+    local_plans_dir = repo_root / ".agents" / "plans"
+    if local_plans_dir.is_dir():
+        return local_plans_dir, "existing-local"
+
+    recommended_dir = recommended_plans_dir(repo_root)
+    if recommended_dir:
+        return recommended_dir, "repo-guidance"
+
+    return xdg_state_home() / "agent-skills" / "plan" / repo_state_slug(repo_root) / "plans", "xdg-state"
+
+
+def resolve_plans_dir(plans_dir_arg: Optional[str], repo_root: Path) -> Tuple[Path, str]:
+    if plans_dir_arg:
+        return resolve_path(plans_dir_arg, repo_root), "explicit"
+    return default_plans_dir(repo_root)
 
 
 def template_path_for(kind: Optional[str], skill_root: Path) -> Optional[str]:
@@ -373,6 +454,7 @@ def classify_request(
     explicit_kind: str,
     repo_root: Path,
     plans_dir: Path,
+    plans_dir_source: str,
     skill_root: Path,
     request_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -393,6 +475,7 @@ def classify_request(
             "target_path": str(existing_plan.path),
             "slug": existing_plan.path.stem,
             "plans_dir": str(plans_dir),
+            "plans_dir_source": plans_dir_source,
             "contract_path": str(skill_root / "references" / "plan-contract.md"),
             "routing_path": str(skill_root / "references" / "routing.md"),
             "template_path": template_path_for(kind, skill_root),
@@ -419,6 +502,7 @@ def classify_request(
         "target_path": str(target_path),
         "slug": slug,
         "plans_dir": str(plans_dir),
+        "plans_dir_source": plans_dir_source,
         "contract_path": str(skill_root / "references" / "plan-contract.md"),
         "routing_path": str(skill_root / "references" / "routing.md"),
         "template_path": template_path_for(kind, skill_root),
@@ -450,7 +534,7 @@ def request_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser)
 
 def command_classify(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     repo_root = resolve_path(args.repo_root, Path.cwd())
-    plans_dir = resolve_path(args.plans_dir, repo_root)
+    plans_dir, plans_dir_source = resolve_plans_dir(args.plans_dir, repo_root)
     skill_root = resolve_path(args.skill_root, Path.cwd())
     request_text, request_display, request_file = request_from_args(args, parser)
     payload = classify_request(
@@ -459,6 +543,7 @@ def command_classify(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         explicit_kind=args.kind,
         repo_root=repo_root,
         plans_dir=plans_dir,
+        plans_dir_source=plans_dir_source,
         skill_root=skill_root,
         request_file=request_file,
     )
@@ -481,6 +566,7 @@ def render_instructions(classification: Dict[str, Any], skill_root: Path) -> str
         "",
         f"- Route: action={action}, kind={kind}, mode={mode}",
         f"- Target path: {classification.get('target_path')}",
+        f"- Plans directory source: {classification.get('plans_dir_source')}",
         f"- Existing plan: {classification.get('existing_plan_path') or 'none'}",
         f"- Consider external research: {str(classification.get('should_consider_external_research')).lower()}",
         f"- Consider context fan-out: {str(classification.get('should_consider_fanout_research')).lower()}",
@@ -682,7 +768,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit kind override.",
     )
     classify_parser.add_argument("--repo-root", default=".", help="Repo root used for path resolution.")
-    classify_parser.add_argument("--plans-dir", default=".agents/plans", help="Plan output directory.")
+    classify_parser.add_argument(
+        "--plans-dir",
+        help=(
+            "Explicit plan output directory. Defaults to existing local .agents/plans, "
+            "then repo guidance, then XDG state."
+        ),
+    )
     classify_parser.add_argument(
         "--skill-root",
         default=str(skill_root_from_script()),

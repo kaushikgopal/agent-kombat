@@ -5,15 +5,20 @@ Use the classifier first:
 ```bash
 python3 "$SKILL_DIR/scripts/plan_core.py" classify \
   --repo-root "$PWD" \
-  --plans-dir "$PWD/.agents/plans" \
   --request "$ARGUMENTS"
 ```
 
 For file-backed requests, use `--request-file path/to/request.txt` instead of
 `--request`.
 
-`$PWD` must be the repo where the resulting `.agents/plans` note should live.
+`$PWD` must be the repo the resulting plan note should be associated with.
 `$SKILL_DIR` must resolve to this skill package directory.
+
+Plan directory selection is:
+
+1. existing `$PWD/.agents/plans`
+2. repo-local plans path recommended in `AGENTS.md`, `CLAUDE.md`, or `README.md`
+3. XDG state fallback under `$XDG_STATE_HOME` or `~/.local/state`
 
 ## Route Selection
 
