@@ -5,21 +5,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-bash -n "$ROOT_DIR/agent-combat"
+bash -n "$ROOT_DIR/agent-kombat"
 
-"$ROOT_DIR/agent-combat" --dry-run --no-interactive --workdir "$TMP_DIR/dry" "build a rate limiter" >/tmp/agent-combat-dry.out
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive --workdir "$TMP_DIR/dry" "build a rate limiter" >/tmp/agent-kombat-dry.out
 test ! -e "$TMP_DIR/dry"
-grep -q "Dry run: no agent calls will be made" /tmp/agent-combat-dry.out
+grep -q "Dry run: no agent calls will be made" /tmp/agent-kombat-dry.out
 
-if "$ROOT_DIR/agent-combat" --no-interactive >/tmp/agent-combat-missing.out 2>&1; then
+if "$ROOT_DIR/agent-kombat" --no-interactive >/tmp/agent-kombat-missing.out 2>&1; then
   echo "expected missing requirement to fail" >&2
   exit 1
 fi
-grep -q "missing requirement" /tmp/agent-combat-missing.out
+grep -q "missing requirement" /tmp/agent-kombat-missing.out
 
-"$ROOT_DIR/agent-combat" --dry-run --no-interactive --rounds 1 --no-judge "draft a tiny implementation plan" >/tmp/agent-combat-cheap.out
-grep -q '"rounds_planned": 1' /tmp/agent-combat-cheap.out
-grep -q '"judge_enabled": false' /tmp/agent-combat-cheap.out
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive --rounds 1 --no-judge "draft a tiny implementation plan" >/tmp/agent-kombat-cheap.out
+grep -q '"rounds_planned": 1' /tmp/agent-kombat-cheap.out
+grep -q '"judge_enabled": false' /tmp/agent-kombat-cheap.out
 
 cat >"$TMP_DIR/sample-plan.md" <<'MD'
 # Sample Plan
@@ -27,10 +27,10 @@ cat >"$TMP_DIR/sample-plan.md" <<'MD'
 Build a tiny CLI that prints hello.
 MD
 
-"$ROOT_DIR/agent-combat" --dry-run --no-interactive --requirement-file "$TMP_DIR/sample-plan.md" \
-  "debate this plan" >/tmp/agent-combat-file.out
-grep -q "debate this plan" /tmp/agent-combat-file.out
-grep -q "Build a tiny CLI that prints hello." /tmp/agent-combat-file.out
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive --requirement-file "$TMP_DIR/sample-plan.md" \
+  "debate this plan" >/tmp/agent-kombat-file.out
+grep -q "debate this plan" /tmp/agent-kombat-file.out
+grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-file.out
 
 FAKE_BIN="$TMP_DIR/bin"
 mkdir -p "$FAKE_BIN"
@@ -227,6 +227,15 @@ SH
 cat >"$FAKE_BIN/gum" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+next_response() {
+  if [[ -n "${FAKE_GUM_RESPONSES_FILE:-}" && -f "$FAKE_GUM_RESPONSES_FILE" ]]; then
+    local first
+    first="$(sed -n '1p' "$FAKE_GUM_RESPONSES_FILE")"
+    sed '1d' "$FAKE_GUM_RESPONSES_FILE" >"$FAKE_GUM_RESPONSES_FILE.tmp"
+    mv "$FAKE_GUM_RESPONSES_FILE.tmp" "$FAKE_GUM_RESPONSES_FILE"
+    printf '%s\n' "$first"
+  fi
+}
 case "${1:-}" in
   --version)
     echo "gum fake"
@@ -240,6 +249,10 @@ case "${1:-}" in
     printf 'confirm\n' >>"${FAKE_GUM_LOG:?}"
     exit 0
     ;;
+  choose|input|write)
+    printf '%s\n' "$1" >>"${FAKE_GUM_LOG:?}"
+    next_response
+    ;;
   *)
     echo "unexpected gum command" >&2
     exit 1
@@ -251,22 +264,39 @@ chmod +x "$FAKE_BIN/claude" "$FAKE_BIN/codex" "$FAKE_BIN/gum"
 
 FAKE_GUM_LOG="$TMP_DIR/gum.log" script -q "$TMP_DIR/gum.typescript" \
   env PATH="$FAKE_BIN:$PATH" FAKE_GUM_LOG="$TMP_DIR/gum.log" \
-  "$ROOT_DIR/agent-combat" --dry-run --interactive "gum display" >/dev/null
+  "$ROOT_DIR/agent-kombat" --dry-run --interactive "gum display" >/dev/null
 grep -q "style" "$TMP_DIR/gum.log"
 
-PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
+cat >"$TMP_DIR/gum-responses" <<EOF
+Prompt + plan file
+focus on missing risks
+$TMP_DIR/sample-plan.md
+EOF
+
+FAKE_GUM_LOG="$TMP_DIR/intake-gum.log" script -q "$TMP_DIR/intake.typescript" \
+  env PATH="$FAKE_BIN:$PATH" \
+  FAKE_GUM_LOG="$TMP_DIR/intake-gum.log" \
+  FAKE_GUM_RESPONSES_FILE="$TMP_DIR/gum-responses" \
+  "$ROOT_DIR/agent-kombat" --dry-run >/tmp/agent-kombat-intake.out
+grep -q "choose" "$TMP_DIR/intake-gum.log"
+grep -q "write" "$TMP_DIR/intake-gum.log"
+grep -q "input" "$TMP_DIR/intake-gum.log"
+grep -q "focus on missing risks" /tmp/agent-kombat-intake.out
+grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-intake.out
+
+PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
   --contract-check \
   --workdir "$TMP_DIR/contract" \
   --claude-model fake-claude \
-  --codex-model fake-codex >/tmp/agent-combat-contract.out
+  --codex-model fake-codex >/tmp/agent-kombat-contract.out
 jq -e '.status == "ok" and .codex.session_id == "fake-codex-thread"' "$TMP_DIR/contract/contract-summary.json" >/dev/null
 
-PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
+PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
   --no-interactive \
   --rounds 1 \
   --no-judge \
   --workdir "$TMP_DIR/run" \
-  "draft a tiny implementation plan" >/tmp/agent-combat-round0.out
+  "draft a tiny implementation plan" >/tmp/agent-kombat-round0.out
 
 test -f "$TMP_DIR/run/rounds/r0.json"
 test -f "$TMP_DIR/run/rounds/r1.json"
@@ -282,12 +312,12 @@ jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DI
 grep -q "Claude Revised Plan" "$TMP_DIR/run/plan-agent1.md"
 grep -q "Codex Revised Plan" "$TMP_DIR/run/plan-agent2.md"
 
-if PATH="$FAKE_BIN:$PATH" FAKE_CODEX_FAIL_DEBATE=1 "$ROOT_DIR/agent-combat" \
+if PATH="$FAKE_BIN:$PATH" FAKE_CODEX_FAIL_DEBATE=1 "$ROOT_DIR/agent-kombat" \
   --no-interactive \
   --rounds 1 \
   --no-judge \
   --workdir "$TMP_DIR/fail-run" \
-  "draft a tiny implementation plan" >/tmp/agent-combat-fail.out 2>/tmp/agent-combat-fail.err; then
+  "draft a tiny implementation plan" >/tmp/agent-kombat-fail.out 2>/tmp/agent-kombat-fail.err; then
   echo "expected failed debate run to fail" >&2
   exit 1
 fi
@@ -297,21 +327,21 @@ jq -e '.published_round == 0 and .last_successful_artifact == "rounds/r0.json"' 
 cmp "$TMP_DIR/fail-run/plan-agent1.md" "$TMP_DIR/fail-run/rounds/r0-agent1.md"
 cmp "$TMP_DIR/fail-run/plan-agent2.md" "$TMP_DIR/fail-run/rounds/r0-agent2.md"
 
-PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
-  --resume "$TMP_DIR/fail-run" >/tmp/agent-combat-resume.out
+PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
+  --resume "$TMP_DIR/fail-run" >/tmp/agent-kombat-resume.out
 jq -e '.published_round == 1 and .phase == "done" and .status == "done"' "$TMP_DIR/fail-run/config.json" >/dev/null
 test -f "$TMP_DIR/fail-run/rounds/r1.json"
 test -f "$TMP_DIR/fail-run/plan-final.md"
 
-"$ROOT_DIR/agent-combat" --show "$TMP_DIR/fail-run" >/tmp/agent-combat-show.out
-grep -q "Final plan:" /tmp/agent-combat-show.out
+"$ROOT_DIR/agent-kombat" --show "$TMP_DIR/fail-run" >/tmp/agent-kombat-show.out
+grep -q "Final plan:" /tmp/agent-kombat-show.out
 
-PATH="$FAKE_BIN:$PATH" FAKE_JUDGE_ANOTHER=1 FAKE_JUDGE_COUNT_FILE="$TMP_DIR/judge-count" "$ROOT_DIR/agent-combat" \
+PATH="$FAKE_BIN:$PATH" FAKE_JUDGE_ANOTHER=1 FAKE_JUDGE_COUNT_FILE="$TMP_DIR/judge-count" "$ROOT_DIR/agent-kombat" \
   --no-interactive \
   --rounds 0 \
   --max-extra 1 \
   --workdir "$TMP_DIR/judge-run" \
-  "draft a tiny implementation plan" >/tmp/agent-combat-judge.out
+  "draft a tiny implementation plan" >/tmp/agent-kombat-judge.out
 
 test -f "$TMP_DIR/judge-run/judge-verdict.json"
 test -f "$TMP_DIR/judge-run/rounds/judge-1.json"
@@ -325,11 +355,11 @@ jq -e '.recommendation == "synthesize" and .converged == true' "$TMP_DIR/judge-r
 mkdir -p "$TMP_DIR/default-cwd"
 (
   cd "$TMP_DIR/default-cwd"
-  PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
+  PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
     --no-interactive \
     --rounds 0 \
     --max-extra 0 \
-    "draft a tiny implementation plan" >/tmp/agent-combat-default.out
+    "draft a tiny implementation plan" >/tmp/agent-kombat-default.out
 )
 default_run="$(find "$TMP_DIR/default-cwd" -maxdepth 1 -type d -name 'debate_*' | sort | tail -n 1)"
 test -n "$default_run"

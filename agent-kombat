@@ -5,9 +5,9 @@ VERSION="0.1.0"
 
 ENV_CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 ENV_CODEX_MODEL="${CODEX_MODEL:-}"
-ENV_AGENT_COMBAT_CLAUDE_MODEL="${AGENT_COMBAT_CLAUDE_MODEL:-}"
-ENV_AGENT_COMBAT_CODEX_MODEL="${AGENT_COMBAT_CODEX_MODEL:-}"
-ENV_AGENT_COMBAT_JUDGE_MODEL="${AGENT_COMBAT_JUDGE_MODEL:-}"
+ENV_AGENT_KOMBAT_CLAUDE_MODEL="${AGENT_KOMBAT_CLAUDE_MODEL:-}"
+ENV_AGENT_KOMBAT_CODEX_MODEL="${AGENT_KOMBAT_CODEX_MODEL:-}"
+ENV_AGENT_KOMBAT_JUDGE_MODEL="${AGENT_KOMBAT_JUDGE_MODEL:-}"
 
 ROUNDS=3
 MAX_EXTRA_ROUNDS=1
@@ -39,10 +39,10 @@ COLOR_BLUE=""
 usage() {
   cat <<'USAGE'
 Usage:
-  agent-combat [options] "requirement"
-  agent-combat --contract-check
-  agent-combat --show WORKDIR
-  agent-combat --resume WORKDIR
+  agent-kombat [options] "requirement"
+  agent-kombat --contract-check
+  agent-kombat --show WORKDIR
+  agent-kombat --resume WORKDIR
 
 Options:
   -r, --rounds N           Debate rounds after round 0 (default: 3)
@@ -229,6 +229,79 @@ parse_args() {
   done
 }
 
+should_run_intake() {
+  [[ -z "$REQUIREMENT" ]] || return 1
+  [[ -z "$REQUIREMENT_FILE" ]] || return 1
+  [[ -z "$SHOW_WORKDIR" ]] || return 1
+  [[ -z "$RESUME_WORKDIR" ]] || return 1
+  [[ "$CONTRACT_CHECK" -eq 0 ]] || return 1
+  [[ "$NO_INTERACTIVE" -eq 0 ]] || return 1
+  [[ -t 0 && -t 1 ]] || return 1
+  return 0
+}
+
+read_plain_input() {
+  local prompt="$1"
+  local value
+  printf '%s: ' "$prompt" >&2
+  read -r value
+  printf '%s\n' "$value"
+}
+
+run_interactive_intake() {
+  if ! should_run_intake; then
+    return
+  fi
+
+  local source
+  if have gum; then
+    gum style --border normal --padding "1 2" --margin "1 0" \
+      "AGENT KOMBAT" \
+      "Start with a prompt, an existing plan file, or both." \
+      "Tip: if you have a plan file, let Agent Kombat read it here instead of only mentioning the path in the prompt."
+    source="$(gum choose \
+      "Write a prompt" \
+      "Use an existing plan file" \
+      "Prompt + plan file")"
+  else
+    step "Agent Kombat intake"
+    info "Choose input source:"
+    info "1) Write a prompt"
+    info "2) Use an existing plan file"
+    info "3) Prompt + plan file"
+    source="$(read_plain_input "Choice [1-3]")"
+  fi
+
+  case "$source" in
+    "Write a prompt"|1)
+      if have gum; then
+        REQUIREMENT="$(gum write --placeholder "Describe the requirement or decision you want debated")"
+      else
+        REQUIREMENT="$(read_plain_input "Prompt")"
+      fi
+      ;;
+    "Use an existing plan file"|2)
+      if have gum; then
+        REQUIREMENT_FILE="$(gum input --placeholder "sample-plan.md" --prompt "Plan file: ")"
+      else
+        REQUIREMENT_FILE="$(read_plain_input "Plan file")"
+      fi
+      ;;
+    "Prompt + plan file"|3)
+      if have gum; then
+        REQUIREMENT="$(gum write --placeholder "What should the agents focus on while debating this plan?")"
+        REQUIREMENT_FILE="$(gum input --placeholder "sample-plan.md" --prompt "Plan file: ")"
+      else
+        REQUIREMENT="$(read_plain_input "Prompt")"
+        REQUIREMENT_FILE="$(read_plain_input "Plan file")"
+      fi
+      ;;
+    *)
+      die "cancelled"
+      ;;
+  esac
+}
+
 load_requirement_file() {
   if [[ -z "$REQUIREMENT_FILE" ]]; then
     return
@@ -252,25 +325,25 @@ EOF
 }
 
 init_model_defaults() {
-  if [[ -n "$ENV_AGENT_COMBAT_CLAUDE_MODEL" ]]; then
-    CLAUDE_MODEL="$ENV_AGENT_COMBAT_CLAUDE_MODEL"
-    CLAUDE_MODEL_SOURCE="env:AGENT_COMBAT_CLAUDE_MODEL"
+  if [[ -n "$ENV_AGENT_KOMBAT_CLAUDE_MODEL" ]]; then
+    CLAUDE_MODEL="$ENV_AGENT_KOMBAT_CLAUDE_MODEL"
+    CLAUDE_MODEL_SOURCE="env:AGENT_KOMBAT_CLAUDE_MODEL"
   elif [[ -n "$ENV_CLAUDE_MODEL" ]]; then
     CLAUDE_MODEL="$ENV_CLAUDE_MODEL"
     CLAUDE_MODEL_SOURCE="env:CLAUDE_MODEL"
   fi
 
-  if [[ -n "$ENV_AGENT_COMBAT_CODEX_MODEL" ]]; then
-    CODEX_MODEL="$ENV_AGENT_COMBAT_CODEX_MODEL"
-    CODEX_MODEL_SOURCE="env:AGENT_COMBAT_CODEX_MODEL"
+  if [[ -n "$ENV_AGENT_KOMBAT_CODEX_MODEL" ]]; then
+    CODEX_MODEL="$ENV_AGENT_KOMBAT_CODEX_MODEL"
+    CODEX_MODEL_SOURCE="env:AGENT_KOMBAT_CODEX_MODEL"
   elif [[ -n "$ENV_CODEX_MODEL" ]]; then
     CODEX_MODEL="$ENV_CODEX_MODEL"
     CODEX_MODEL_SOURCE="env:CODEX_MODEL"
   fi
 
-  if [[ -n "$ENV_AGENT_COMBAT_JUDGE_MODEL" ]]; then
-    JUDGE_MODEL="$ENV_AGENT_COMBAT_JUDGE_MODEL"
-    JUDGE_MODEL_SOURCE="env:AGENT_COMBAT_JUDGE_MODEL"
+  if [[ -n "$ENV_AGENT_KOMBAT_JUDGE_MODEL" ]]; then
+    JUDGE_MODEL="$ENV_AGENT_KOMBAT_JUDGE_MODEL"
+    JUDGE_MODEL_SOURCE="env:AGENT_KOMBAT_JUDGE_MODEL"
   elif [[ "$CLAUDE_MODEL_SOURCE" != "default" ]]; then
     JUDGE_MODEL="$CLAUDE_MODEL"
     JUDGE_MODEL_SOURCE="derived:claude"
@@ -280,7 +353,7 @@ init_model_defaults() {
 load_local_config_defaults() {
   local config=""
   local candidate
-  for candidate in ".agent-combat/config.json" "agent-combat.json" "${XDG_CONFIG_HOME:-$HOME/.config}/agent-combat/config.json"; do
+  for candidate in ".agent-kombat/config.json" "agent-kombat.json" "${XDG_CONFIG_HOME:-$HOME/.config}/agent-kombat/config.json"; do
     if [[ -f "$candidate" ]]; then
       config="$candidate"
       break
@@ -549,7 +622,7 @@ JSON
 build_round0_prompt() {
   local requirement_file="$1"
   cat <<'PROMPT'
-You are Agent Combat participant 1 of 2.
+You are Agent Kombat participant 1 of 2.
 
 Create an implementation plan for the requirement below. This is Round 0:
 you have not seen the other agent's plan yet. A competing plan will arrive in
@@ -576,7 +649,7 @@ PROMPT
 build_round0_codex_prompt() {
   local requirement_file="$1"
   cat <<'PROMPT'
-You are Agent Combat participant 2 of 2.
+You are Agent Kombat participant 2 of 2.
 
 Create an implementation plan for the requirement below. This is Round 0:
 you have not seen the other agent's plan yet. A competing plan will arrive in
@@ -685,7 +758,7 @@ PROMPT
 build_synthesis_prompt() {
   local target="$1"
   cat <<'PROMPT'
-You are synthesizing the final implementation plan from an Agent Combat debate.
+You are synthesizing the final implementation plan from an Agent Kombat debate.
 
 Produce a concise, auditable Markdown plan. Do not execute the plan. Do not
 claim unresolved issues are resolved unless the judge verdict or debate
@@ -1377,13 +1450,13 @@ print_config() {
   local target="$1"
   if have gum && [[ "$NO_INTERACTIVE" -eq 0 && -t 1 ]]; then
     gum style --border normal --padding "1 2" --margin "1 0" \
-      "AGENT COMBAT" \
+      "AGENT KOMBAT" \
       "Agent 1: Claude Code ($CLAUDE_MODEL)" \
       "Agent 2: Codex CLI ($CODEX_MODEL)" \
       "Judge: Claude Code ($JUDGE_MODEL)" \
       "Rounds: $ROUNDS + up to $MAX_EXTRA_ROUNDS replay"
   else
-    step "Agent Combat"
+    step "Agent Kombat"
     info "Agent 1: Claude Code ($CLAUDE_MODEL)"
     info "Agent 2: Codex CLI ($CODEX_MODEL)"
     info "Judge: Claude Code ($JUDGE_MODEL)"
@@ -1548,7 +1621,7 @@ extract_codex_session_id() {
 run_contract_check() {
   preflight_tools
 
-  local root="${WORKDIR:-.agent-combat-contract/contract_$(date '+%Y%m%d_%H%M%S')}"
+  local root="${WORKDIR:-.agent-kombat-contract/contract_$(date '+%Y%m%d_%H%M%S')}"
   mkdir -p "$root"
   contract_schema_file "$root"
 
@@ -1651,6 +1724,7 @@ run_contract_check() {
 main() {
   init_model_defaults
   parse_args "$@"
+  run_interactive_intake
   load_requirement_file
   init_color
   preflight_jq
