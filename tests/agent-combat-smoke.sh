@@ -32,6 +32,7 @@ if [[ "${1:-}" == "--version" ]]; then
   exit 0
 fi
 session_id=""
+prompt=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --session-id|--resume)
@@ -39,19 +40,40 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
+      prompt="$1"
       shift
       ;;
   esac
 done
 [[ -n "$session_id" ]] || session_id="fake-claude-session"
-jq -n --arg session_id "$session_id" '{
-  type: "result",
-  subtype: "success",
-  is_error: false,
-  session_id: $session_id,
-  structured_output: {plan_markdown: "# Claude Plan\n\n- Build the smallest useful version.\n"},
-  result: "Done."
-}'
+if [[ "$prompt" == *"strengths_to_steal"* ]]; then
+  jq -n --arg session_id "$session_id" '{
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: $session_id,
+    structured_output: {
+      strengths_to_steal: ["Codex keeps artifacts explicit."],
+      revised_plan_markdown: "# Claude Revised Plan\n\n- Build the smallest useful version.\n- Keep artifacts explicit.\n",
+      critique: ["The competing plan is too terse."],
+      unresolved_issues: [{
+        issue: "Scope",
+        why_it_matters: "The plan needs an explicit stopping point.",
+        suggested_test_or_decision_rule: "Accept if the smoke test passes."
+      }]
+    },
+    result: "Done."
+  }'
+else
+  jq -n --arg session_id "$session_id" '{
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: $session_id,
+    structured_output: {plan_markdown: "# Claude Plan\n\n- Build the smallest useful version.\n"},
+    result: "Done."
+  }'
+fi
 SH
 
 cat >"$FAKE_BIN/codex" <<'SH'
@@ -68,13 +90,14 @@ fi
 shift
 output_last=""
 thread_id="fake-codex-thread"
+prompt=""
+resume_mode=0
+if [[ "${1:-}" == "resume" ]]; then
+  resume_mode=1
+  shift
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    resume)
-      shift
-      thread_id="${1:-$thread_id}"
-      shift || true
-      ;;
     --output-last-message)
       output_last="$2"
       shift 2
@@ -86,6 +109,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     *)
+      if [[ "$resume_mode" -eq 1 ]]; then
+        thread_id="$1"
+        resume_mode=2
+      else
+        prompt="$1"
+      fi
       shift
       ;;
   esac
@@ -94,7 +123,24 @@ done
   echo "missing --output-last-message" >&2
   exit 1
 }
-jq -n '{plan_markdown: "# Codex Plan\n\n- Keep state auditable on disk.\n"}' >"$output_last"
+if [[ "$prompt" == *"strengths_to_steal"* ]]; then
+  if [[ "${FAKE_CODEX_FAIL_DEBATE:-}" == "1" ]]; then
+    echo "simulated codex debate failure" >&2
+    exit 7
+  fi
+  jq -n '{
+    strengths_to_steal: ["Claude keeps the implementation small."],
+    revised_plan_markdown: "# Codex Revised Plan\n\n- Keep state auditable on disk.\n- Keep the implementation small.\n",
+    critique: ["The competing plan needs clearer artifacts."],
+    unresolved_issues: [{
+      issue: "Artifacts",
+      why_it_matters: "Resume depends on durable files.",
+      suggested_test_or_decision_rule: "Accept if r1.json and objections exist."
+    }]
+  }' >"$output_last"
+else
+  jq -n '{plan_markdown: "# Codex Plan\n\n- Keep state auditable on disk.\n"}' >"$output_last"
+fi
 jq -cn --arg thread_id "$thread_id" '{type: "thread.started", thread_id: $thread_id}'
 jq -cn '{type: "turn.completed", usage: {}}'
 SH
@@ -103,13 +149,34 @@ chmod +x "$FAKE_BIN/claude" "$FAKE_BIN/codex"
 
 PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
   --no-interactive \
-  --rounds 0 \
+  --rounds 1 \
   --no-judge \
   --workdir "$TMP_DIR/run" \
   "draft a tiny implementation plan" >/tmp/agent-combat-round0.out
 
 test -f "$TMP_DIR/run/rounds/r0.json"
+test -f "$TMP_DIR/run/rounds/r1.json"
+test -f "$TMP_DIR/run/rounds/r1-objections.json"
 test -f "$TMP_DIR/run/plan-agent1.md"
 test -f "$TMP_DIR/run/plan-agent2.md"
-jq -e '.published_round == 0 and .agent1.session_id != null and .agent2.session_id == "fake-codex-thread"' "$TMP_DIR/run/config.json" >/dev/null
+jq -e '.published_round == 1 and .agent1.session_id != null and .agent2.session_id == "fake-codex-thread"' "$TMP_DIR/run/config.json" >/dev/null
 jq -e '.published == true and .agents.agent1.parse_status == "ok" and .agents.agent2.parse_status == "ok"' "$TMP_DIR/run/rounds/r0.json" >/dev/null
+jq -e '.published == true and .kind == "debate" and .agents.agent1.parse_status == "ok" and .agents.agent2.parse_status == "ok"' "$TMP_DIR/run/rounds/r1.json" >/dev/null
+jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DIR/run/rounds/r1-objections.json" >/dev/null
+grep -q "Claude Revised Plan" "$TMP_DIR/run/plan-agent1.md"
+grep -q "Codex Revised Plan" "$TMP_DIR/run/plan-agent2.md"
+
+if PATH="$FAKE_BIN:$PATH" FAKE_CODEX_FAIL_DEBATE=1 "$ROOT_DIR/agent-combat" \
+  --no-interactive \
+  --rounds 1 \
+  --no-judge \
+  --workdir "$TMP_DIR/fail-run" \
+  "draft a tiny implementation plan" >/tmp/agent-combat-fail.out 2>/tmp/agent-combat-fail.err; then
+  echo "expected failed debate run to fail" >&2
+  exit 1
+fi
+
+test ! -f "$TMP_DIR/fail-run/rounds/r1.json"
+jq -e '.published_round == 0 and .last_successful_artifact == "rounds/r0.json"' "$TMP_DIR/fail-run/config.json" >/dev/null
+cmp "$TMP_DIR/fail-run/plan-agent1.md" "$TMP_DIR/fail-run/rounds/r0-agent1.md"
+cmp "$TMP_DIR/fail-run/plan-agent2.md" "$TMP_DIR/fail-run/rounds/r0-agent2.md"
