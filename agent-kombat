@@ -324,6 +324,49 @@ EOF
   fi
 }
 
+extract_prompt_file_refs() {
+  if [[ -z "$REQUIREMENT" ]]; then
+    return
+  fi
+  printf '%s\n' "$REQUIREMENT" |
+    tr '[:space:]' '\n' |
+    sed -E -n 's/^@(.+)$/\1/p' |
+    sed 's/[,.;:!?)]$//' |
+    awk 'NF && !seen[$0]++'
+}
+
+expand_prompt_file_refs() {
+  local refs
+  refs="$(extract_prompt_file_refs)"
+  [[ -n "$refs" ]] || return 0
+
+  local addition=""
+  local ref
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    case "$ref" in
+      -*|*"://"*)
+        die "unsupported @file reference: @$ref"
+        ;;
+    esac
+    [[ -f "$ref" ]] || die "referenced @file does not exist: $ref"
+    addition="$(cat <<EOF
+$addition
+
+---BEGIN REFERENCED FILE: $ref---
+$(cat "$ref")
+---END REFERENCED FILE---
+EOF
+)"
+  done <<<"$refs"
+
+  REQUIREMENT="$(cat <<EOF
+$REQUIREMENT
+$addition
+EOF
+)"
+}
+
 init_model_defaults() {
   if [[ -n "$ENV_AGENT_KOMBAT_CLAUDE_MODEL" ]]; then
     CLAUDE_MODEL="$ENV_AGENT_KOMBAT_CLAUDE_MODEL"
@@ -1726,6 +1769,7 @@ main() {
   parse_args "$@"
   run_interactive_intake
   load_requirement_file
+  expand_prompt_file_refs
   init_color
   preflight_jq
 

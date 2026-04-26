@@ -32,6 +32,19 @@ MD
 grep -q "debate this plan" /tmp/agent-kombat-file.out
 grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-file.out
 
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
+  "debate @$TMP_DIR/sample-plan.md and focus on missing risks" >/tmp/agent-kombat-at-file.out
+grep -q "debate @$TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out
+grep -q -- "---BEGIN REFERENCED FILE: $TMP_DIR/sample-plan.md---" /tmp/agent-kombat-at-file.out
+grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-at-file.out
+
+if "$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
+  "debate @$TMP_DIR/missing-plan.md" >/tmp/agent-kombat-missing-ref.out 2>&1; then
+  echo "expected missing @file to fail" >&2
+  exit 1
+fi
+grep -q "referenced @file does not exist" /tmp/agent-kombat-missing-ref.out
+
 FAKE_BIN="$TMP_DIR/bin"
 mkdir -p "$FAKE_BIN"
 

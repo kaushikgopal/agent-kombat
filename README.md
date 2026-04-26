@@ -32,6 +32,9 @@ Run a cheap one-round planning debate:
 ./agent-kombat --no-judge -r 1 "build a tiny CLI that prints hello"
 ```
 
+By default, Agent Kombat runs Round 0 independent planning, then 3 debate
+rounds, then a judge pass that can request up to 1 focused replay round.
+
 Agent Kombat writes a timestamped `debate_*` directory with each agent's plan,
 the debate transcript artifacts, and a final synthesized plan:
 
@@ -59,18 +62,19 @@ Use a richer prompt when you already know the constraints:
   "plan a POSIX shell CLI; keep it one file; include tests and install docs"
 ```
 
-Use `--requirement-file` when the source input is already a document:
+Reference files directly in the prompt with `@path` when the source input is
+already a document:
 
 ```sh
-./agent-kombat --requirement-file sample-plan.md \
-  "Debate this plan. Find missing risks, unclear sequencing, and better tests."
+./agent-kombat "Debate @sample-plan.md. Find missing risks, unclear sequencing, and better tests."
 ```
 
-That command copies the file content into `requirement.txt` and asks both agents
-to plan from it. The file is treated as input data, not instructions to execute.
+That command expands `@sample-plan.md`, copies the file content into
+`requirement.txt`, and asks both agents to plan from it. The file is treated as
+input data, not instructions to execute.
 
-Do not rely on a prompt like `read sample-plan.md` by itself. Agent Kombat keeps
-agent calls planning-only, so the broker should read the file and pass the
+Do not rely on a prompt like `read sample-plan.md` without the `@`. Agent Kombat
+keeps agent calls planning-only, so the broker should read the file and pass the
 content into the debate explicitly.
 
 ## Requirements
@@ -90,7 +94,7 @@ want the nicer presentation. The CLI works without it.
 ./agent-kombat --dry-run "build a rate limiter for our API"
 ./agent-kombat --contract-check
 ./agent-kombat -r 1 --no-judge "draft a tiny implementation plan"
-./agent-kombat --requirement-file sample-plan.md "debate this plan"
+./agent-kombat "debate @sample-plan.md"
 ./agent-kombat --resume debate_YYYYMMDD_HHMMSS
 ./agent-kombat --show debate_YYYYMMDD_HHMMSS
 ```
@@ -189,7 +193,8 @@ Future wrappers should call the script, not reimplement the broker.
 - `--dry-run REQUIREMENT` prints the selected configuration and avoids agent calls.
 - `--contract-check` validates the installed Claude and Codex automation surface.
 - `--no-interactive` prevents prompts.
-- `--requirement-file FILE` reads the requirement from a document.
+- `@file` references in the prompt are expanded before agents are called.
+- `--requirement-file FILE` also reads requirement text from a document.
 - `--workdir DIR` chooses the artifact directory.
 - `--show WORKDIR` prints the latest state.
 - `--resume WORKDIR` resumes from durable state.
