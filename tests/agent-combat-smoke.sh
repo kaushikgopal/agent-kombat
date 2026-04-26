@@ -234,6 +234,15 @@ jq -e '.published_round == 0 and .last_successful_artifact == "rounds/r0.json"' 
 cmp "$TMP_DIR/fail-run/plan-agent1.md" "$TMP_DIR/fail-run/rounds/r0-agent1.md"
 cmp "$TMP_DIR/fail-run/plan-agent2.md" "$TMP_DIR/fail-run/rounds/r0-agent2.md"
 
+PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
+  --resume "$TMP_DIR/fail-run" >/tmp/agent-combat-resume.out
+jq -e '.published_round == 1 and .phase == "done" and .status == "done"' "$TMP_DIR/fail-run/config.json" >/dev/null
+test -f "$TMP_DIR/fail-run/rounds/r1.json"
+test -f "$TMP_DIR/fail-run/plan-final.md"
+
+"$ROOT_DIR/agent-combat" --show "$TMP_DIR/fail-run" >/tmp/agent-combat-show.out
+grep -q "Final plan:" /tmp/agent-combat-show.out
+
 PATH="$FAKE_BIN:$PATH" FAKE_JUDGE_ANOTHER=1 FAKE_JUDGE_COUNT_FILE="$TMP_DIR/judge-count" "$ROOT_DIR/agent-combat" \
   --no-interactive \
   --rounds 0 \

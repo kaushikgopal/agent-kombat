@@ -24,6 +24,8 @@ want the nicer presentation. The CLI works without it.
 ./agent-combat --dry-run "build a rate limiter for our API"
 ./agent-combat --contract-check
 ./agent-combat -r 1 --no-judge "draft a tiny implementation plan"
+./agent-combat --resume debate_YYYYMMDD_HHMMSS
+./agent-combat --show debate_YYYYMMDD_HHMMSS
 ```
 
 The default run creates a timestamped directory:
@@ -68,6 +70,11 @@ Future wrappers should call the script, not reimplement the broker.
 - `--workdir DIR` chooses the artifact directory.
 - `--show WORKDIR` prints the latest state.
 - `--resume WORKDIR` resumes from durable state.
+
+`--resume` reconstructs progress from published round manifests, restores the
+top-level live plan files from the last complete round, and continues from the
+next round. It never uses a CLI "last session" shortcut; Claude and Codex resume
+only from session IDs stored in `config.json`.
 
 Exit codes:
 
