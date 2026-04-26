@@ -393,6 +393,7 @@ test -f "$TMP_DIR/judge-run/rounds/r1.json"
 test -f "$TMP_DIR/judge-run/plan-final.md"
 jq -e '.extra_rounds_used == 1 and .published_round == 1 and .phase == "done" and .status == "done"' "$TMP_DIR/judge-run/config.json" >/dev/null
 jq -e '.recommendation == "synthesize" and .converged == true' "$TMP_DIR/judge-run/judge-verdict.json" >/dev/null
+jq -e 'length == 2 and all(.[]; .kind != null and .published == true)' "$TMP_DIR/judge-run/rounds/judge-2-round-summary.json" >/dev/null
 
 mkdir -p "$TMP_DIR/default-cwd"
 (

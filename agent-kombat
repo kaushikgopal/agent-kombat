@@ -728,7 +728,13 @@ PROMPT
 
 build_round_summary_json() {
   local target="$1"
-  jq -s 'map({
+  jq -s 'map(select(
+    .published == true and
+    (.round | type == "string") and
+    (.kind | type == "string") and
+    (.agents.agent1 | type == "object") and
+    (.agents.agent2 | type == "object")
+  ) | {
     round,
     kind,
     published,
