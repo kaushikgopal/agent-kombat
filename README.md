@@ -1,21 +1,20 @@
 # Agent Kombat
 
-Agent Kombat is a shell CLI for turning one requirement into an auditable
-planning debate between Claude Code and Codex.
+Agent Kombat turns one prompt or plan into a planning debate between Claude Code and Codex.
+It saves the debate, judge verdict, and final plan as plain files you can inspect or resume.
 
-The script is intentionally small: one shell file, filesystem artifacts, and
-explicit session IDs. It does not run a server or hide the transcript in an
-opaque database.
+To understand the purpose of this tool, how I use it, and why it is valuable,
+read the full blog post at https://kau.sh/blog/agent-kombat.
 
-## Quick Start
+## Cheat Sheet
 
-Run `agent-kombat` by itself to open the guided intake UI:
+Start the guided UI:
 
 ```sh
 ./agent-kombat
 ```
 
-With `gum` installed, the UI lets you choose one of three input shapes:
+Abbreviated output:
 
 ```text
 AGENT KOMBAT
@@ -26,128 +25,86 @@ Start with a prompt, an existing plan file, or both.
   Prompt + plan file
 ```
 
-Run a cheap one-round planning debate:
+Run the usual debate from a prompt:
 
 ```sh
-./agent-kombat --no-judge -r 1 "build a tiny CLI that prints hello"
+./agent-kombat "plan a tiny CLI that prints hello"
 ```
 
-By default, Agent Kombat runs Round 0 independent planning, then 3 debate
-rounds, then a judge pass that can request up to 1 focused replay round.
-
-Agent Kombat writes a timestamped `debate_*` directory with each agent's plan,
-the debate transcript artifacts, and a final synthesized plan:
-
-```sh
-./agent-kombat --show debate_YYYYMMDD_HHMMSS
-cat debate_YYYYMMDD_HHMMSS/plan-final.md
-```
-
-Use `--dry-run` first if you want to inspect the selected models and output
-directory without calling either agent.
-
-## Input Depth
-
-Agent Kombat can take anything from a sentence to a full existing plan. Use a
-short prompt when the decision space is small:
-
-```sh
-./agent-kombat "choose an implementation plan for a tiny hello-world CLI"
-```
-
-Use a richer prompt when you already know the constraints:
-
-```sh
-./agent-kombat --no-judge -r 1 \
-  "plan a POSIX shell CLI; keep it one file; include tests and install docs"
-```
-
-Reference files directly in the prompt with `@path` when the source input is
-already a document:
-
-```sh
-./agent-kombat "Debate @sample-plan.md. Find missing risks, unclear sequencing, and better tests."
-```
-
-That command expands `@sample-plan.md`, copies the file content into
-`requirement.txt`, and asks both agents to plan from it. The file is treated as
-input data, not instructions to execute.
-
-Do not rely on a prompt like `read sample-plan.md` without the `@`. Agent Kombat
-keeps agent calls planning-only, so the broker should read the file and pass the
-content into the debate explicitly.
-
-## Requirements
-
-- `bash`
-- `jq`
-- `claude`
-- `codex`
-- Optional: `gum` for a cleaner terminal display
-
-Install `gum` from <https://github.com/charmbracelet/gum#installation> if you
-want the nicer presentation. The CLI works without it.
-
-## Usage
-
-```sh
-./agent-kombat --dry-run "build a rate limiter for our API"
-./agent-kombat --contract-check
-./agent-kombat -r 1 --no-judge "draft a tiny implementation plan"
-./agent-kombat "debate @sample-plan.md"
-./agent-kombat --resume debate_YYYYMMDD_HHMMSS
-./agent-kombat --show debate_YYYYMMDD_HHMMSS
-```
-
-The default run creates a timestamped directory:
-
-```text
-debate_YYYYMMDD_HHMMSS/
-├── requirement.txt
-├── config.json
-├── events.jsonl
-├── plan-agent1.md
-├── plan-agent2.md
-├── plan-final.md
-├── judge-verdict.json
-└── rounds/
-```
-
-`config.json` is durable state. It records the origin working directory,
-selected harnesses, models, session IDs, published round, and replay counters.
-Resume logic must use those explicit session IDs, never a CLI's "last session"
-shortcut.
-
-## Example Output
-
-A normal run prints progress like this:
+Abbreviated output:
 
 ```text
 ==> Agent Kombat
 Agent 1: Claude Code (opus)
 Agent 2: Codex CLI (gpt-5)
 Judge: Claude Code (opus)
-Rounds: 1 + up to 1 replay
-Requirement: build a tiny CLI that prints hello
-Workdir: /path/to/debate_YYYYMMDD_HHMMSS
+Rounds: 3 + up to 1 replay
+Requirement: plan a tiny CLI that prints hello
+Workdir: debate_YYYYMMDD_HHMMSS
 ==> Round 0: independent planning
 ok: Round 0 published
 ==> Round 1: debate
 ok: Round 1 published
+==> Round 2: debate
+ok: Round 2 published
+==> Round 3: debate
+ok: Round 3 published
 ==> Judge attempt 1
 ok: Judge verdict written
 ok: Final plan: debate_YYYYMMDD_HHMMSS/plan-final.md
 ```
 
-`--show` summarizes the durable state and artifact paths:
+Debate an existing plan file:
+
+```sh
+./agent-kombat "debate @sample-plan.md and focus on missing risks"
+```
+
+Abbreviated `requirement.txt`:
+
+```text
+debate @sample-plan.md and focus on missing risks
+
+<user-input-plan>
+source: sample-plan.md
+# Sample Plan
+
+...
+</user-input-plan>
+```
+
+Preview the run without calling either agent:
+
+```sh
+./agent-kombat --dry-run "build a rate limiter"
+```
+
+Abbreviated output:
+
+```text
+==> Dry run: no agent calls will be made
+==> Agent Kombat
+Rounds: 3 + up to 1 replay
+Requirement: build a rate limiter
+...
+"rounds_planned": 3,
+"judge_enabled": true,
+"status": "dry-run"
+```
+
+Inspect the latest durable state:
+
+```sh
+./agent-kombat --show debate_YYYYMMDD_HHMMSS
+```
+
+Abbreviated output:
 
 ```text
 {
   "status": "done",
   "phase": "done",
-  "published_round": 1,
-  "current_round": 2,
-  "rounds_planned": 1,
+  "published_round": 3,
   "last_successful_artifact": "plan-final.md"
 }
 
@@ -157,21 +114,37 @@ Judge verdict: debate_YYYYMMDD_HHMMSS/judge-verdict.json
 Final plan: debate_YYYYMMDD_HHMMSS/plan-final.md
 ```
 
-The final plan is Markdown:
+Resume an interrupted run:
 
-```markdown
-# Final Plan
-
-## Goal
-
-Build a one-file CLI that prints `hello` and exits successfully.
-
-## Implementation Steps
-
-1. Create the executable script.
-2. Add a smoke test for stdout and exit code.
-3. Document local install and usage.
+```sh
+./agent-kombat --resume debate_YYYYMMDD_HHMMSS
 ```
+
+Use fewer rounds when the decision is small:
+
+```sh
+./agent-kombat -r 1 --no-judge "draft a tiny implementation plan"
+```
+
+Run only one debate round but keep the judge:
+
+```sh
+./agent-kombat -r 1 "compare two API designs"
+```
+
+Validate local CLI contracts:
+
+```sh
+./agent-kombat --contract-check
+```
+
+## Requirements
+
+- `bash`
+- `jq`
+- `claude`
+- `codex`
+- Optional: `gum` for the guided terminal UI
 
 ## Install Locally
 
@@ -180,39 +153,20 @@ mkdir -p "$HOME/.local/bin"
 ln -sf "$(pwd)/agent-kombat" "$HOME/.local/bin/agent-kombat"
 ```
 
-Fish users can add the bin directory for the current shell with:
+Fish users can add that directory for the current shell with:
 
 ```fish
 fish_add_path "$HOME/.local/bin"
 ```
 
-## Stable Wrapper Surface
+## Notes
 
-Future wrappers should call the script, not reimplement the broker.
+By default, Agent Kombat runs Round 0 independent planning, then 3 debate
+rounds, then a judge pass that can request up to 1 focused replay round.
 
-- `--dry-run REQUIREMENT` prints the selected configuration and avoids agent calls.
-- `--contract-check` validates the installed Claude and Codex automation surface.
-- `--no-interactive` prevents prompts.
-- `@file` references in the prompt are expanded before agents are called.
-- `--requirement-file FILE` also reads requirement text from a document.
-- `--workdir DIR` chooses the artifact directory.
-- `--show WORKDIR` prints the latest state.
-- `--resume WORKDIR` resumes from durable state.
-
-`--resume` reconstructs progress from published round manifests, restores the
-top-level live plan files from the last complete round, and continues from the
-next round. It never uses a CLI "last session" shortcut; Claude and Codex resume
-only from session IDs stored in `config.json`.
-
-Exit codes:
-
-- `0`: success
-- `1`: usage or validation failure
-- `2`: missing dependency or failed CLI contract
-
-## Planning Restrictions
+`@file` references are expanded by the broker before agents are called. The file
+content is treated as input data, not instructions to execute.
 
 Agent calls are planning-only by default. Claude is invoked with tools disabled
 and plan permission mode. Codex is invoked with a read-only sandbox and explicit
-prompts that forbid command execution for debate turns. Opponent plans are
-treated as untrusted data to critique, not instructions to follow.
+prompts that forbid command execution for debate turns.

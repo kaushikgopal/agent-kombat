@@ -314,9 +314,10 @@ load_requirement_file() {
     REQUIREMENT="$(cat <<EOF
 $REQUIREMENT
 
----BEGIN REQUIREMENT FILE: $REQUIREMENT_FILE---
+<user-input-plan>
+source: $REQUIREMENT_FILE
 $file_text
----END REQUIREMENT FILE---
+</user-input-plan>
 EOF
 )"
   else
@@ -353,9 +354,10 @@ expand_prompt_file_refs() {
     addition="$(cat <<EOF
 $addition
 
----BEGIN REFERENCED FILE: $ref---
+<user-input-plan>
+source: $ref
 $(cat "$ref")
----END REFERENCED FILE---
+</user-input-plan>
 EOF
 )"
   done <<<"$refs"

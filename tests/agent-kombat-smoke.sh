@@ -30,12 +30,17 @@ MD
 "$ROOT_DIR/agent-kombat" --dry-run --no-interactive --requirement-file "$TMP_DIR/sample-plan.md" \
   "debate this plan" >/tmp/agent-kombat-file.out
 grep -q "debate this plan" /tmp/agent-kombat-file.out
+grep -q -- "<user-input-plan>" /tmp/agent-kombat-file.out
+grep -q -- "source: $TMP_DIR/sample-plan.md" /tmp/agent-kombat-file.out
+grep -q -- "</user-input-plan>" /tmp/agent-kombat-file.out
 grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-file.out
 
 "$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
   "debate @$TMP_DIR/sample-plan.md and focus on missing risks" >/tmp/agent-kombat-at-file.out
 grep -q "debate @$TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out
-grep -q -- "---BEGIN REFERENCED FILE: $TMP_DIR/sample-plan.md---" /tmp/agent-kombat-at-file.out
+grep -q -- "<user-input-plan>" /tmp/agent-kombat-at-file.out
+grep -q -- "source: $TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out
+grep -q -- "</user-input-plan>" /tmp/agent-kombat-at-file.out
 grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-at-file.out
 
 if "$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
