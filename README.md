@@ -8,6 +8,8 @@ read the full blog post at https://kau.sh/blog/agent-kombat.
 
 ## Cheat Sheet
 
+### Guided UI
+
 Start the guided UI:
 
 ```sh
@@ -24,6 +26,8 @@ Start with a prompt, an existing plan file, or both.
   Use an existing plan file
   Prompt + plan file
 ```
+
+### Write a Prompt
 
 Run the usual debate from a prompt:
 
@@ -54,13 +58,36 @@ ok: Judge verdict written
 ok: Final plan: debate_YYYYMMDD_HHMMSS/plan-final.md
 ```
 
-Debate an existing plan file:
+### Use an Existing Plan File
+
+Use `@file` when the plan already exists and you want Agent Kombat to load it:
+
+```sh
+./agent-kombat "@sample-plan.md"
+```
+
+Agent Kombat writes the expanded prompt to `requirement.txt`:
+
+```text
+@sample-plan.md
+
+<user-input-plan>
+source: sample-plan.md
+# Sample Plan
+
+...
+</user-input-plan>
+```
+
+### Prompt + Plan File
+
+Add instructions around the `@file` reference when you want to steer the debate:
 
 ```sh
 ./agent-kombat "debate @sample-plan.md and focus on missing risks"
 ```
 
-Abbreviated `requirement.txt`:
+Agent Kombat writes the expanded prompt to `requirement.txt`:
 
 ```text
 debate @sample-plan.md and focus on missing risks
@@ -72,6 +99,8 @@ source: sample-plan.md
 ...
 </user-input-plan>
 ```
+
+### Preview and Inspect
 
 Preview the run without calling either agent:
 
@@ -113,6 +142,8 @@ Agent 2 plan: debate_YYYYMMDD_HHMMSS/plan-agent2.md
 Judge verdict: debate_YYYYMMDD_HHMMSS/judge-verdict.json
 Final plan: debate_YYYYMMDD_HHMMSS/plan-final.md
 ```
+
+### Resume and Tune Rounds
 
 Resume an interrupted run:
 
