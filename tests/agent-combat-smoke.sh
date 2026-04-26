@@ -46,7 +46,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$session_id" ]] || session_id="fake-claude-session"
-if [[ "$prompt" == *"You are an independent judge"* ]]; then
+if [[ "$prompt" == *"You are synthesizing the final implementation plan"* ]]; then
+  jq -n --arg session_id "$session_id" '{
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: $session_id,
+    result: "# Final Plan\n\n- Ship the converged implementation.\n"
+  }'
+elif [[ "$prompt" == *"You are an independent judge"* ]]; then
   count_file="${FAKE_JUDGE_COUNT_FILE:-}"
   count=0
   if [[ -n "$count_file" && -f "$count_file" ]]; then
@@ -202,7 +210,9 @@ test -f "$TMP_DIR/run/rounds/r1.json"
 test -f "$TMP_DIR/run/rounds/r1-objections.json"
 test -f "$TMP_DIR/run/plan-agent1.md"
 test -f "$TMP_DIR/run/plan-agent2.md"
+test -f "$TMP_DIR/run/plan-final.md"
 jq -e '.published_round == 1 and .agent1.session_id != null and .agent2.session_id == "fake-codex-thread"' "$TMP_DIR/run/config.json" >/dev/null
+jq -e '.phase == "done" and .status == "done" and .last_successful_artifact == "plan-final.md"' "$TMP_DIR/run/config.json" >/dev/null
 jq -e '.published == true and .agents.agent1.parse_status == "ok" and .agents.agent2.parse_status == "ok"' "$TMP_DIR/run/rounds/r0.json" >/dev/null
 jq -e '.published == true and .kind == "debate" and .agents.agent1.parse_status == "ok" and .agents.agent2.parse_status == "ok"' "$TMP_DIR/run/rounds/r1.json" >/dev/null
 jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DIR/run/rounds/r1-objections.json" >/dev/null
@@ -236,5 +246,26 @@ test -f "$TMP_DIR/judge-run/rounds/judge-1.json"
 test -f "$TMP_DIR/judge-run/rounds/judge-2.json"
 test -f "$TMP_DIR/judge-run/rounds/r1-judge-focus.txt"
 test -f "$TMP_DIR/judge-run/rounds/r1.json"
-jq -e '.extra_rounds_used == 1 and .published_round == 1 and .phase == "judge" and .status == "judged"' "$TMP_DIR/judge-run/config.json" >/dev/null
+test -f "$TMP_DIR/judge-run/plan-final.md"
+jq -e '.extra_rounds_used == 1 and .published_round == 1 and .phase == "done" and .status == "done"' "$TMP_DIR/judge-run/config.json" >/dev/null
 jq -e '.recommendation == "synthesize" and .converged == true' "$TMP_DIR/judge-run/judge-verdict.json" >/dev/null
+
+mkdir -p "$TMP_DIR/default-cwd"
+(
+  cd "$TMP_DIR/default-cwd"
+  PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-combat" \
+    --no-interactive \
+    --rounds 0 \
+    --max-extra 0 \
+    "draft a tiny implementation plan" >/tmp/agent-combat-default.out
+)
+default_run="$(find "$TMP_DIR/default-cwd" -maxdepth 1 -type d -name 'debate_*' | sort | tail -n 1)"
+test -n "$default_run"
+test -f "$default_run/requirement.txt"
+test -f "$default_run/config.json"
+test -f "$default_run/events.jsonl"
+test -d "$default_run/rounds"
+test -f "$default_run/plan-agent1.md"
+test -f "$default_run/plan-agent2.md"
+test -f "$default_run/judge-verdict.json"
+test -f "$default_run/plan-final.md"

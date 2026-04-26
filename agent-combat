@@ -649,6 +649,55 @@ PROMPT
 PROMPT
 }
 
+build_synthesis_prompt() {
+  local target="$1"
+  cat <<'PROMPT'
+You are synthesizing the final implementation plan from an Agent Combat debate.
+
+Produce a concise, auditable Markdown plan. Do not execute the plan. Do not
+claim unresolved issues are resolved unless the judge verdict or debate
+artifacts support that.
+
+If the judge flagged unresolved issues, make a defensible call on each one with
+a brief rationale. If judge review was disabled, state that the plan is
+synthesized from the latest agent plans without independent judge review.
+
+Requirement:
+---BEGIN REQUIREMENT---
+PROMPT
+  cat "$target/requirement.txt"
+  cat <<'PROMPT'
+---END REQUIREMENT---
+
+Latest Agent 1 plan:
+---BEGIN AGENT 1 PLAN---
+PROMPT
+  cat "$target/plan-agent1.md"
+  cat <<'PROMPT'
+---END AGENT 1 PLAN---
+
+Latest Agent 2 plan:
+---BEGIN AGENT 2 PLAN---
+PROMPT
+  cat "$target/plan-agent2.md"
+  cat <<'PROMPT'
+---END AGENT 2 PLAN---
+
+Judge verdict:
+---BEGIN JUDGE VERDICT---
+PROMPT
+  if [[ -f "$target/judge-verdict.json" ]]; then
+    cat "$target/judge-verdict.json"
+  else
+    printf '%s\n' '{"judge_enabled":false,"note":"No independent judge was run."}'
+  fi
+  cat <<'PROMPT'
+---END JUDGE VERDICT---
+
+Return only Markdown for the final plan.
+PROMPT
+}
+
 build_debate_prompt() {
   local own_plan_file="$1"
   local opponent_plan_file="$2"
@@ -1244,6 +1293,44 @@ run_judge_loop() {
   ok "Judge verdict written"
 }
 
+run_synthesis() {
+  local target="$1"
+  local origin_cwd
+  origin_cwd="$(jq -r '.origin_cwd' "$target/config.json")"
+
+  local prompt_file="$target/rounds/synthesis.prompt.txt"
+  local raw_file="$target/rounds/synthesis.raw.json"
+  local session_id
+  session_id="$(uuid)"
+
+  build_synthesis_prompt "$target" >"$prompt_file"
+  update_config "$target" --arg id "$session_id" '.phase = "synthesis" | .status = "running" | .synthesis = {name: "claude", model: .judge.model, session_id: $id}'
+  log_event "$target" "synthesis.call.started" "$(jq -n --arg session_id "$session_id" '{session_id: $session_id}')"
+
+  if ! (
+    cd "$origin_cwd"
+    claude -p \
+      --model "$JUDGE_MODEL" \
+      --session-id "$session_id" \
+      --permission-mode plan \
+      --tools "" \
+      --output-format json \
+      "$(cat "$prompt_file")"
+  ) >"$raw_file" 2>"$target/rounds/synthesis.stderr"; then
+    log_event "$target" "synthesis.call.failed"
+    sed -n '1,80p' "$target/rounds/synthesis.stderr" >&2
+    die "synthesis failed"
+  fi
+
+  jq -e --arg id "$session_id" '.session_id == $id or .sessionId == $id' "$raw_file" >/dev/null \
+    || die "synthesis did not report the expected session id"
+  jq -er '.result | select(type == "string" and length > 0)' "$raw_file" >"$target/plan-final.md" \
+    || die "synthesis did not produce Markdown result"
+  update_config "$target" '.phase = "done" | .status = "done" | .last_successful_artifact = "plan-final.md"'
+  log_event "$target" "synthesis.call.completed" "$(jq -n --arg session_id "$session_id" --arg artifact "plan-final.md" '{session_id: $session_id, artifact: $artifact}')"
+  ok "Final plan: $target/plan-final.md"
+}
+
 print_config() {
   local target="$1"
   if have gum && [[ "$NO_INTERACTIVE" -eq 0 && -t 1 ]]; then
@@ -1491,7 +1578,7 @@ main() {
   run_round0 "$target"
   run_debate_loop "$target"
   run_judge_loop "$target"
-  warn "final synthesis is not implemented yet"
+  run_synthesis "$target"
 }
 
 main "$@"
