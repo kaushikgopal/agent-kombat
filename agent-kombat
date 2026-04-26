@@ -81,6 +81,15 @@ warn() { printf '%swarn:%s %s\n' "$COLOR_YELLOW" "$COLOR_RESET" "$*" >&2; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+gum_progress_enabled() {
+  have gum && [[ -t 1 ]]
+}
+
+progress_panel() {
+  gum_progress_enabled || return 0
+  gum style --border normal --padding "0 2" --margin "1 0" "$@" || true
+}
+
 json_escape() {
   jq -Rn --arg v "$1" '$v'
 }
@@ -1001,6 +1010,10 @@ run_claude_round0() {
   build_round0_prompt "$target/requirement.txt" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent1 --arg round r0 '{agent: $agent, round: $round}')"
+  progress_panel \
+    "Waiting for Claude Code" \
+    "Round 0 independent planning" \
+    "Writing: rounds/r0-agent1.raw.json"
   if ! (
     cd "$origin_cwd"
     claude -p \
@@ -1051,6 +1064,10 @@ run_judge_attempt() {
   update_config "$target" --arg id "$session_id" '.phase = "judge" | .judge.session_id = $id'
   log_event "$target" "judge.call.started" "$(jq -n --arg attempt "$attempt" --arg session_id "$session_id" '{attempt: ($attempt|tonumber), session_id: $session_id}')"
 
+  progress_panel \
+    "Waiting for judge" \
+    "Attempt $attempt reviews the published debate artifacts" \
+    "Writing: rounds/judge-${attempt}.json"
   if ! (
     cd "$origin_cwd"
     claude -p \
@@ -1098,6 +1115,11 @@ run_claude_debate_turn() {
   build_debate_prompt "$own_input" "$opponent_input" "$focus_file" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent1 --arg round "r${round}" '{agent: $agent, round: $round}')"
+  progress_panel \
+    "Waiting for Claude Code" \
+    "Round $round debate turn" \
+    "Reading: plan-agent1.md and plan-agent2.md" \
+    "Writing: rounds/r${round}-agent1.json"
   if ! (
     cd "$origin_cwd"
     claude -p \
@@ -1137,6 +1159,10 @@ run_codex_round0() {
   build_round0_codex_prompt "$target/requirement.txt" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent2 --arg round r0 '{agent: $agent, round: $round}')"
+  progress_panel \
+    "Waiting for Codex CLI" \
+    "Round 0 independent planning" \
+    "Writing: rounds/r0-agent2.jsonl"
   if ! (
     cd "$origin_cwd"
     codex exec \
@@ -1182,6 +1208,11 @@ run_codex_debate_turn() {
   build_debate_prompt "$own_input" "$opponent_input" "$focus_file" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent2 --arg round "r${round}" '{agent: $agent, round: $round}')"
+  progress_panel \
+    "Waiting for Codex CLI" \
+    "Round $round debate turn" \
+    "Reading: plan-agent2.md and plan-agent1.md" \
+    "Writing: rounds/r${round}-agent2.json"
   if ! (
     cd "$origin_cwd"
     codex exec resume \
@@ -1482,6 +1513,10 @@ run_synthesis() {
   update_config "$target" --arg id "$session_id" '.phase = "synthesis" | .status = "running" | .synthesis = {name: "claude", model: .judge.model, session_id: $id}'
   log_event "$target" "synthesis.call.started" "$(jq -n --arg session_id "$session_id" '{session_id: $session_id}')"
 
+  progress_panel \
+    "Waiting for final synthesis" \
+    "Combining the latest published plans" \
+    "Writing: plan-final.md"
   if ! (
     cd "$origin_cwd"
     claude -p \
@@ -1832,6 +1867,10 @@ main() {
   create_debate_skeleton "$target"
   print_config "$target"
   maybe_confirm
+  progress_panel \
+    "Debate started" \
+    "Agent calls write raw and parsed artifacts under rounds/." \
+    "If a later phase fails, resume this workdir with --resume."
   run_round0 "$target"
   run_debate_loop "$target"
   run_judge_loop "$target"

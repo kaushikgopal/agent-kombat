@@ -323,6 +323,21 @@ grep -q "input" "$TMP_DIR/intake-gum.log"
 grep -q "focus on missing risks" /tmp/agent-kombat-intake.out
 grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-intake.out
 
+FAKE_GUM_LOG="$TMP_DIR/run-gum.log" script -q "$TMP_DIR/run-gum.typescript" \
+  env PATH="$FAKE_BIN:$PATH" \
+  FAKE_GUM_LOG="$TMP_DIR/run-gum.log" \
+  "$ROOT_DIR/agent-kombat" \
+  --no-interactive \
+  --rounds 0 \
+  --max-extra 0 \
+  --no-judge \
+  --workdir "$TMP_DIR/gum-run" \
+  "draft a tiny implementation plan" >/dev/null
+grep -q "Waiting for Claude Code" "$TMP_DIR/run-gum.typescript"
+grep -q "Waiting for Codex CLI" "$TMP_DIR/run-gum.typescript"
+grep -q "Writing: rounds/r0-agent1.raw.json" "$TMP_DIR/run-gum.typescript"
+grep -q "Waiting for final synthesis" "$TMP_DIR/run-gum.typescript"
+
 PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-contract-args.log" "$ROOT_DIR/agent-kombat" \
   --contract-check \
   --workdir "$TMP_DIR/contract" \

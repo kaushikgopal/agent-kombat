@@ -175,7 +175,7 @@ Validate local CLI contracts:
 - `jq`
 - `claude`
 - `codex`
-- Optional: `gum` for the guided terminal UI
+- Optional: `gum` for the guided terminal UI and in-progress status panels
 
 ## Install Locally
 
