@@ -10,6 +10,21 @@ bash -n "$ROOT_DIR/agent-kombat"
 "$ROOT_DIR/agent-kombat" --dry-run --no-interactive --workdir "$TMP_DIR/dry" "build a rate limiter" >/tmp/agent-kombat-dry.out
 test ! -e "$TMP_DIR/dry"
 grep -q "Dry run: no agent calls will be made" /tmp/agent-kombat-dry.out
+grep -q "Workdir: $TMP_DIR/dry" /tmp/agent-kombat-dry.out
+grep -q "\"workdir\": \"$TMP_DIR/dry\"" /tmp/agent-kombat-dry.out
+
+mkdir -p "$TMP_DIR/existing-dry"
+if "$ROOT_DIR/agent-kombat" --dry-run --no-interactive --workdir "$TMP_DIR/existing-dry" \
+  "build a rate limiter" >/tmp/agent-kombat-dry-collision.out 2>&1; then
+  echo "expected dry-run workdir collision to fail" >&2
+  exit 1
+fi
+grep -q "workdir already exists: $TMP_DIR/existing-dry" /tmp/agent-kombat-dry-collision.out
+
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive --claude-model sonnet "x" >/tmp/agent-kombat-judge-model.out
+grep -q "Judge: Claude Code (sonnet)" /tmp/agent-kombat-judge-model.out
+jq -e '.judge.model == "sonnet" and .judge.model_source == "derived:claude"' \
+  <(sed -n '/^{/,$p' /tmp/agent-kombat-judge-model.out) >/dev/null
 
 if "$ROOT_DIR/agent-kombat" --no-interactive >/tmp/agent-kombat-missing.out 2>&1; then
   echo "expected missing requirement to fail" >&2
@@ -176,6 +191,9 @@ if [[ "${1:-}" == "--version" ]]; then
   echo "codex-cli 0.125.0"
   exit 0
 fi
+if [[ -n "${FAKE_CODEX_ARGS_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$FAKE_CODEX_ARGS_LOG"
+fi
 if [[ "${1:-}" != "exec" ]]; then
   echo "unexpected codex command" >&2
   exit 1
@@ -196,6 +214,9 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --model|--sandbox|--output-schema)
+      shift 2
+      ;;
+    -c|--config)
       shift 2
       ;;
     --json|--skip-git-repo-check)
@@ -302,14 +323,15 @@ grep -q "input" "$TMP_DIR/intake-gum.log"
 grep -q "focus on missing risks" /tmp/agent-kombat-intake.out
 grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-intake.out
 
-PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
+PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-contract-args.log" "$ROOT_DIR/agent-kombat" \
   --contract-check \
   --workdir "$TMP_DIR/contract" \
   --claude-model fake-claude \
   --codex-model fake-codex >/tmp/agent-kombat-contract.out
 jq -e '.status == "ok" and .codex.session_id == "fake-codex-thread"' "$TMP_DIR/contract/contract-summary.json" >/dev/null
+grep -Fq 'resume -c sandbox_mode="read-only"' "$TMP_DIR/codex-contract-args.log"
 
-PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
+PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-run-args.log" "$ROOT_DIR/agent-kombat" \
   --no-interactive \
   --rounds 1 \
   --no-judge \
@@ -329,6 +351,7 @@ jq -e '.published == true and .kind == "debate" and .agents.agent1.parse_status 
 jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DIR/run/rounds/r1-objections.json" >/dev/null
 grep -q "Claude Revised Plan" "$TMP_DIR/run/plan-agent1.md"
 grep -q "Codex Revised Plan" "$TMP_DIR/run/plan-agent2.md"
+grep -Fq 'resume -c sandbox_mode="read-only"' "$TMP_DIR/codex-run-args.log"
 
 if PATH="$FAKE_BIN:$PATH" FAKE_CODEX_FAIL_DEBATE=1 "$ROOT_DIR/agent-kombat" \
   --no-interactive \
@@ -345,11 +368,12 @@ jq -e '.published_round == 0 and .last_successful_artifact == "rounds/r0.json"' 
 cmp "$TMP_DIR/fail-run/plan-agent1.md" "$TMP_DIR/fail-run/rounds/r0-agent1.md"
 cmp "$TMP_DIR/fail-run/plan-agent2.md" "$TMP_DIR/fail-run/rounds/r0-agent2.md"
 
-PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
+PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-resume-args.log" "$ROOT_DIR/agent-kombat" \
   --resume "$TMP_DIR/fail-run" >/tmp/agent-kombat-resume.out
 jq -e '.published_round == 1 and .phase == "done" and .status == "done"' "$TMP_DIR/fail-run/config.json" >/dev/null
 test -f "$TMP_DIR/fail-run/rounds/r1.json"
 test -f "$TMP_DIR/fail-run/plan-final.md"
+grep -Fq 'resume -c sandbox_mode="read-only"' "$TMP_DIR/codex-resume-args.log"
 
 "$ROOT_DIR/agent-kombat" --show "$TMP_DIR/fail-run" >/tmp/agent-kombat-show.out
 grep -q "Final plan:" /tmp/agent-kombat-show.out

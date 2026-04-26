@@ -432,6 +432,13 @@ load_local_config_defaults() {
   fi
 }
 
+resolve_derived_judge_model() {
+  if [[ "$JUDGE_MODEL_SOURCE" = "default" ]]; then
+    JUDGE_MODEL="$CLAUDE_MODEL"
+    JUDGE_MODEL_SOURCE="derived:claude"
+  fi
+}
+
 preflight_tools() {
   local missing=()
   local tool
@@ -476,6 +483,7 @@ write_config() {
   local origin_cwd="$2"
   local phase="$3"
   local status="$4"
+  local config_file="${5:-$target/config.json}"
   local judge_enabled="true"
   [[ "$NO_JUDGE" -eq 1 ]] && judge_enabled="false"
 
@@ -541,7 +549,7 @@ write_config() {
       current_round: 0,
       last_successful_artifact: null,
       status: $status
-    }' >"$target/config.json"
+    }' >"$config_file"
 }
 
 update_config() {
@@ -1171,6 +1179,7 @@ run_codex_debate_turn() {
   if ! (
     cd "$origin_cwd"
     codex exec resume \
+      -c 'sandbox_mode="read-only"' \
       --model "$CODEX_MODEL" \
       --skip-git-repo-check \
       --json \
@@ -1493,6 +1502,7 @@ run_synthesis() {
 
 print_config() {
   local target="$1"
+  local config_file="${2:-$target/config.json}"
   if have gum && [[ "$NO_INTERACTIVE" -eq 0 && -t 1 ]]; then
     gum style --border normal --padding "1 2" --margin "1 0" \
       "AGENT KOMBAT" \
@@ -1509,7 +1519,7 @@ print_config() {
   fi
   printf 'Requirement: %s\n' "$REQUIREMENT"
   printf 'Workdir: %s\n' "$(abs_path "$target")"
-  jq . "$target/config.json"
+  jq . "$config_file"
 }
 
 maybe_confirm() {
@@ -1732,11 +1742,13 @@ run_contract_check() {
   [[ -n "$codex_session" ]] || contract_die "Codex JSONL did not expose a session id"
   printf '%s\n' "$codex_session" >"$root/codex-session-id.txt"
 
-  if ! codex exec resume "$codex_session" \
+  if ! codex exec resume \
+      -c 'sandbox_mode="read-only"' \
       --model "$CODEX_MODEL" \
       --skip-git-repo-check \
       --json \
       --output-last-message "$root/codex-resume-last.txt" \
+      "$codex_session" \
       'Reply with exactly: resumed' \
       </dev/null \
       >"$root/codex-resume.jsonl" \
@@ -1782,6 +1794,7 @@ main() {
 
   preflight_tools
   load_local_config_defaults
+  resolve_derived_judge_model
 
   if [[ "$CONTRACT_CHECK" -eq 1 ]]; then
     run_contract_check
@@ -1799,13 +1812,14 @@ main() {
   target="${WORKDIR:-$(default_workdir)}"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
+    [[ ! -e "$target" ]] || die "workdir already exists: $target"
     local tmp
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
     mkdir -p "$tmp/dry/rounds"
-    write_config "$tmp/dry" "$PWD" "dry-run" "dry-run"
+    write_config "$target" "$PWD" "dry-run" "dry-run" "$tmp/dry/config.json"
     step "Dry run: no agent calls will be made"
-    print_config "$tmp/dry"
+    print_config "$target" "$tmp/dry/config.json"
     exit 0
   fi
 
