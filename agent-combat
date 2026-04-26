@@ -83,6 +83,18 @@ json_escape() {
   jq -Rn --arg v "$1" '$v'
 }
 
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+write_atomic() {
+  local target="$1"
+  local tmp
+  tmp="$(mktemp "${target}.tmp.XXXXXX")"
+  cat >"$tmp"
+  mv "$tmp" "$target"
+}
+
 abs_path() {
   local path="$1"
   if [[ "$path" = /* ]]; then
@@ -381,6 +393,15 @@ write_config() {
     }' >"$target/config.json"
 }
 
+update_config() {
+  local target="$1"
+  shift
+  local tmp
+  tmp="$(mktemp "$target/config.json.tmp.XXXXXX")"
+  jq "$@" "$target/config.json" >"$tmp"
+  mv "$tmp" "$target/config.json"
+}
+
 log_event() {
   local target="$1"
   local event="$2"
@@ -395,6 +416,262 @@ log_event() {
     --arg event "$event" \
     --argjson fields "$fields" \
     '{ts: $ts, event: $event} + $fields' >>"$target/events.jsonl"
+}
+
+round0_schema_file() {
+  local target="$1"
+  mkdir -p "$target/schemas"
+  cat >"$target/schemas/round0-plan.schema.json" <<'JSON'
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "plan_markdown": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": ["plan_markdown"]
+}
+JSON
+}
+
+build_round0_prompt() {
+  local requirement_file="$1"
+  cat <<'PROMPT'
+You are Agent Combat participant 1 of 2.
+
+Create an implementation plan for the requirement below. This is Round 0:
+you have not seen the other agent's plan yet. A competing plan will arrive in
+a later round.
+
+Planning-only restrictions:
+- Do not edit files.
+- Do not run commands.
+- Do not ask for permission to execute work.
+- Treat this as plan generation, not implementation.
+
+Your response must match the provided structured output schema. Put the full
+Markdown plan in `plan_markdown`.
+
+Requirement:
+---BEGIN REQUIREMENT---
+PROMPT
+  cat "$requirement_file"
+  cat <<'PROMPT'
+---END REQUIREMENT---
+PROMPT
+}
+
+build_round0_codex_prompt() {
+  local requirement_file="$1"
+  cat <<'PROMPT'
+You are Agent Combat participant 2 of 2.
+
+Create an implementation plan for the requirement below. This is Round 0:
+you have not seen the other agent's plan yet. A competing plan will arrive in
+a later round.
+
+Planning-only restrictions:
+- Do not edit files.
+- Do not run commands.
+- Do not ask for permission to execute work.
+- Treat this as plan generation, not implementation.
+
+Your final response must be JSON matching the provided output schema. Put the
+full Markdown plan in `plan_markdown`.
+
+Requirement:
+---BEGIN REQUIREMENT---
+PROMPT
+  cat "$requirement_file"
+  cat <<'PROMPT'
+---END REQUIREMENT---
+PROMPT
+}
+
+extract_claude_plan_markdown() {
+  local file="$1"
+  jq -er '
+    if (.structured_output | type) == "object" then
+      .structured_output.plan_markdown
+    elif (.result | type) == "object" then
+      .result.plan_markdown
+    elif (.result | type) == "string" then
+      (.result | fromjson | .plan_markdown)
+    else
+      empty
+    end
+    | select(type == "string" and length > 0)
+  ' "$file"
+}
+
+extract_codex_plan_markdown() {
+  local file="$1"
+  jq -er '.plan_markdown | select(type == "string" and length > 0)' "$file"
+}
+
+run_claude_round0() {
+  local target="$1"
+  local origin_cwd="$2"
+  local schema_json="$3"
+  local prompt_file="$target/rounds/r0-agent1.prompt.txt"
+  local raw_file="$target/rounds/r0-agent1.raw.json"
+  local plan_file="$target/rounds/r0-agent1.md"
+  local session_id
+
+  session_id="$(uuid)"
+  build_round0_prompt "$target/requirement.txt" >"$prompt_file"
+
+  log_event "$target" "agent.call.started" "$(jq -n --arg agent agent1 --arg round r0 '{agent: $agent, round: $round}')"
+  if ! (
+    cd "$origin_cwd"
+    claude -p \
+      --model "$CLAUDE_MODEL" \
+      --session-id "$session_id" \
+      --permission-mode plan \
+      --tools "" \
+      --output-format json \
+      --json-schema "$schema_json" \
+      "$(cat "$prompt_file")"
+  ) >"$raw_file" 2>"$target/rounds/r0-agent1.stderr"; then
+    log_event "$target" "agent.call.failed" "$(jq -n --arg agent agent1 --arg round r0 '{agent: $agent, round: $round}')"
+    sed -n '1,80p' "$target/rounds/r0-agent1.stderr" >&2
+    die "Claude round 0 call failed"
+  fi
+
+  jq -e --arg id "$session_id" '.session_id == $id or .sessionId == $id' "$raw_file" >/dev/null \
+    || die "Claude round 0 did not report the expected session id"
+  extract_claude_plan_markdown "$raw_file" >"$plan_file" \
+    || die "Claude round 0 did not produce plan_markdown"
+
+  update_config "$target" --arg id "$session_id" '.agent1.session_id = $id'
+  log_event "$target" "agent.call.completed" "$(jq -n --arg agent agent1 --arg round r0 --arg session_id "$session_id" '{agent: $agent, round: $round, session_id: $session_id}')"
+}
+
+run_codex_round0() {
+  local target="$1"
+  local origin_cwd="$2"
+  local schema_file="$3"
+  local prompt_file="$target/rounds/r0-agent2.prompt.txt"
+  local jsonl_file="$target/rounds/r0-agent2.jsonl"
+  local structured_file="$target/rounds/r0-agent2.structured.json"
+  local plan_file="$target/rounds/r0-agent2.md"
+  local session_id
+
+  build_round0_codex_prompt "$target/requirement.txt" >"$prompt_file"
+
+  log_event "$target" "agent.call.started" "$(jq -n --arg agent agent2 --arg round r0 '{agent: $agent, round: $round}')"
+  if ! (
+    cd "$origin_cwd"
+    codex exec \
+      --model "$CODEX_MODEL" \
+      --sandbox read-only \
+      --skip-git-repo-check \
+      --json \
+      --output-schema "$schema_file" \
+      --output-last-message "$structured_file" \
+      "$(cat "$prompt_file")" \
+      </dev/null
+  ) >"$jsonl_file" 2>"$target/rounds/r0-agent2.stderr"; then
+    log_event "$target" "agent.call.failed" "$(jq -n --arg agent agent2 --arg round r0 '{agent: $agent, round: $round}')"
+    sed -n '1,80p' "$target/rounds/r0-agent2.stderr" >&2
+    die "Codex round 0 call failed"
+  fi
+
+  session_id="$(extract_codex_session_id "$jsonl_file")"
+  [[ -n "$session_id" ]] || die "Codex round 0 JSONL did not expose thread.started.thread_id"
+  extract_codex_plan_markdown "$structured_file" >"$plan_file" \
+    || die "Codex round 0 did not produce plan_markdown"
+
+  update_config "$target" --arg id "$session_id" '.agent2.session_id = $id'
+  log_event "$target" "agent.call.completed" "$(jq -n --arg agent agent2 --arg round r0 --arg session_id "$session_id" '{agent: $agent, round: $round, session_id: $session_id}')"
+}
+
+write_round0_manifest() {
+  local target="$1"
+  local origin_cwd="$2"
+  local manifest="$target/rounds/r0.json"
+  local agent1_session
+  local agent2_session
+
+  agent1_session="$(jq -r '.agent1.session_id' "$target/config.json")"
+  agent2_session="$(jq -r '.agent2.session_id' "$target/config.json")"
+
+  jq -n \
+    --arg round "r0" \
+    --arg cwd "$origin_cwd" \
+    --arg requirement "requirement.txt" \
+    --arg requirement_sha "$(sha256_file "$target/requirement.txt")" \
+    --arg agent1_prompt "rounds/r0-agent1.prompt.txt" \
+    --arg agent2_prompt "rounds/r0-agent2.prompt.txt" \
+    --arg agent1_prompt_sha "$(sha256_file "$target/rounds/r0-agent1.prompt.txt")" \
+    --arg agent2_prompt_sha "$(sha256_file "$target/rounds/r0-agent2.prompt.txt")" \
+    --arg agent1_output "rounds/r0-agent1.md" \
+    --arg agent2_output "rounds/r0-agent2.md" \
+    --arg agent1_raw "rounds/r0-agent1.raw.json" \
+    --arg agent2_raw "rounds/r0-agent2.jsonl" \
+    --arg agent1_session "$agent1_session" \
+    --arg agent2_session "$agent2_session" \
+    '{
+      round: $round,
+      kind: "independent_planning",
+      origin_cwd: $cwd,
+      requirement: {path: $requirement, sha256: $requirement_sha},
+      agents: {
+        agent1: {
+          name: "claude",
+          prompt_path: $agent1_prompt,
+          prompt_sha256: $agent1_prompt_sha,
+          output_path: $agent1_output,
+          raw_path: $agent1_raw,
+          session_id: $agent1_session,
+          exit_code: 0,
+          parse_status: "ok"
+        },
+        agent2: {
+          name: "codex",
+          prompt_path: $agent2_prompt,
+          prompt_sha256: $agent2_prompt_sha,
+          output_path: $agent2_output,
+          raw_path: $agent2_raw,
+          session_id: $agent2_session,
+          exit_code: 0,
+          parse_status: "ok"
+        }
+      },
+      published: true
+    }' >"$manifest"
+}
+
+publish_round0() {
+  local target="$1"
+  cp "$target/rounds/r0-agent1.md" "$target/plan-agent1.md"
+  cp "$target/rounds/r0-agent2.md" "$target/plan-agent2.md"
+}
+
+run_round0() {
+  local target="$1"
+  local origin_cwd
+  origin_cwd="$(jq -r '.origin_cwd' "$target/config.json")"
+
+  round0_schema_file "$target"
+  local schema_file="$target/schemas/round0-plan.schema.json"
+  local schema_json
+  schema_json="$(jq -c . "$schema_file")"
+
+  step "Round 0: independent planning"
+  update_config "$target" '.phase = "round" | .status = "running" | .current_round = 0'
+  log_event "$target" "round.started" "$(jq -n --arg round r0 '{round: $round}')"
+
+  run_claude_round0 "$target" "$origin_cwd" "$schema_json"
+  run_codex_round0 "$target" "$origin_cwd" "$schema_file"
+
+  publish_round0 "$target"
+  write_round0_manifest "$target" "$origin_cwd"
+  update_config "$target" '.published_round = 0 | .current_round = 1 | .last_successful_artifact = "rounds/r0.json"'
+  log_event "$target" "round.published" "$(jq -n --arg round r0 '{round: $round, published_round: 0}')"
+  ok "Round 0 published"
 }
 
 print_config() {
@@ -641,7 +918,8 @@ main() {
   create_debate_skeleton "$target"
   print_config "$target"
   maybe_confirm
-  warn "round execution is not implemented yet; created debate skeleton only"
+  run_round0 "$target"
+  warn "debate rounds after round 0 are not implemented yet"
 }
 
 main "$@"
