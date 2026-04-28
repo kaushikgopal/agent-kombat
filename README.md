@@ -9,6 +9,41 @@ read the full blog post at https://kau.sh/blog/agent-kombat.
 
 ## Cheat Sheet
 
+### Pick the Right Contract
+
+Use this rule before running the tool:
+
+| User wants | Command shape | Final file |
+|---|---|---|
+| A plan for doing work | `agent-kombat "plan ..."` or `agent-kombat --contract plan "..."` | `plan-final.md` |
+| The artifact itself | `agent-kombat --contract artifact "draft/write/produce ..."` | `artifact-final.md` |
+| A typed artifact with stronger vocabulary | `agent-kombat --contract path/to/contract.json "..."` | contract-defined |
+
+Default to `plan` only when the desired output is a durable plan note,
+implementation plan, strategy plan, investigation plan, or refinement of an
+existing plan. Use `artifact` when the user asks for final copy, a brief, PRD,
+memo, critique, postmortem, release note, proposal, or any other deliverable
+that should not be plan-shaped.
+
+Concrete examples:
+
+```sh
+# Debate a plan
+agent-kombat "plan a tiny CLI that prints hello"
+
+# Debate final copy, not a writing plan
+agent-kombat --contract artifact \
+  "draft the actual executive brief from @brief-source.md"
+
+# Use a typed contract when the deliverable needs a named noun/schema
+agent-kombat --contract .agents/kombat-contracts/executive-brief.json \
+  "draft the Project Trinity executive brief from @.agents/plans/project-trinity-synthetic-data-prompt.md"
+```
+
+When a prompt says "not a plan," "actual brief," "final copy," or "deliverable
+itself," do not rely on prompt wording alone. Pass `--contract artifact` or a
+custom contract explicitly.
+
 ### Guided UI
 
 Start the guided UI:

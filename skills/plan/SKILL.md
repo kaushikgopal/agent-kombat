@@ -70,13 +70,28 @@ The portable core and canonical CLI live in:
 
 Use it for classification, reusable planning instructions, and validation.
 
-Prompt adapters such as Agent Kombat should own their outer prompt wrapper and
-splice in shared planning instructions from:
+Prompt adapters such as Agent Kombat should own their outer prompt wrapper.
+When the adapter is producing a durable plan note, splice in shared planning
+instructions from:
 
 ```bash
 python3 "$SKILL_DIR/scripts/plan_core.py" render-instructions \
   --classification classification.json
 ```
+
+When the adapter is using planning machinery only for routing and grounding,
+but the requested output is not a plan note, splice in context-only guidance
+instead:
+
+```bash
+python3 "$SKILL_DIR/scripts/plan_core.py" render-context \
+  --classification classification.json
+```
+
+Use `render-context` for final-copy artifacts such as executive briefs, PRDs,
+memos, critiques, postmortems, release notes, and proposals when the user wants
+the deliverable itself rather than a plan for producing it. Do not inject the
+plan contract into those prompts.
 
 The plan note contract lives in:
 
