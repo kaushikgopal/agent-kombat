@@ -9,6 +9,9 @@ read the full blog post at https://kau.sh/blog/agent-kombat.
 
 ## Cheat Sheet
 
+Not a plan? Use `agent-kombat --contract artifact "draft/write/produce ..."`
+so the agents debate the deliverable itself.
+
 ### Pick the Right Contract
 
 Use this rule before running the tool:
