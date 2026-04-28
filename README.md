@@ -1,8 +1,8 @@
 # Agent Kombat
 
-Agent Kombat turns one prompt or plan into a planning debate between Claude Code
-and Codex. It saves the debate, judge verdict, and final plan as plain files you
-can inspect or resume.
+Agent Kombat turns one prompt, plan, or custom artifact request into a debate
+between Claude Code and Codex. It saves the debate, judge verdict, and final
+artifact as plain files you can inspect or resume.
 
 To understand the purpose of this tool, how I use it, and why it is valuable,
 read the full blog post at https://kau.sh/blog/agent-kombat.
@@ -43,10 +43,11 @@ Abbreviated output:
 Agent 1: Claude Code (opus)
 Agent 2: Codex CLI (gpt-5)
 Judge: Claude Code (opus)
+Contract: plan (plan)
 Rounds: 3 + up to 1 replay
 Requirement: plan a tiny CLI that prints hello
 Workdir: debate_YYYYMMDD_HHMMSS
-==> Round 0: independent planning
+==> Round 0: independent plan generation
 ok: Round 0 published
 ==> Round 1: debate
 ok: Round 1 published
@@ -58,6 +59,66 @@ ok: Round 3 published
 ok: Judge verdict written
 ok: Final plan: debate_YYYYMMDD_HHMMSS/plan-final.md
 ```
+
+### Debate a Non-Plan Artifact
+
+Use the built-in `artifact` contract when you want the agents to produce the
+requested artifact itself instead of a plan for producing it:
+
+```sh
+./agent-kombat --contract artifact "draft an executive brief from @brief-source.md"
+```
+
+This keeps the same classification, grounding context, debate rounds, judge,
+replay, and synthesis machinery, but changes the schema and prompts so Round 0
+produces artifacts, debate rounds revise artifacts, and synthesis writes:
+
+```text
+debate_YYYYMMDD_HHMMSS/artifact-final.md
+```
+
+The default `plan` contract is unchanged:
+
+```sh
+./agent-kombat --contract plan "plan a tiny CLI that prints hello"
+```
+
+### Custom Contracts
+
+Use a JSON contract when the deliverable needs more specific language than the
+generic `artifact` contract:
+
+```json
+{
+  "id": "executive-brief",
+  "noun": "brief",
+  "output_field": "brief_markdown",
+  "revised_field": "revised_brief_markdown",
+  "final_filename": "brief-final.md",
+  "final_label": "Final brief",
+  "context_mode": "context",
+  "initial_task": "Draft the requested executive brief.",
+  "debate_task": "Revise your own brief after reviewing a competing brief.",
+  "synthesis_task": "Produce the final requested executive brief from the debate.",
+  "round0_note": "Do not output a plan; output the brief itself.",
+  "synthesis_note": "Return the final brief copy only."
+}
+```
+
+Run it with:
+
+```sh
+./agent-kombat --contract .agents/kombat-contracts/executive-brief.json \
+  "draft the Project Trinity executive brief from @.agents/plans/project-trinity-synthetic-data.md"
+```
+
+`context_mode` controls how much of the planning machinery is injected:
+
+- `instructions`: full durable plan-note contract and templates. This is the
+  default for `plan`.
+- `context`: classification and grounding context without plan-note output
+  rules. This is the default for `artifact`.
+- `none`: no shared planning context beyond the original requirement.
 
 ### Use an Existing Plan File
 
@@ -210,18 +271,21 @@ symlinked into another repo, run the skill from that repo so the local project
 controls where new plans land.
 
 Agent Kombat uses `skills/plan/scripts/plan_core.py` during Round 0 to classify
-the requirement and inject the shared plan contract into both independent
-planning prompts. It does not invoke the skill adapter directly, so Claude and
+the requirement. The `plan` contract injects the full shared plan contract into
+both independent prompts. Non-plan contracts can instead inject context-only
+grounding, so the planning machinery still informs the debate without forcing a
+plan-shaped output. It does not invoke the skill adapter directly, so Claude and
 Codex still create real sessions that later debate rounds can resume.
 
 ## Notes
 
-By default, Agent Kombat runs Round 0 independent planning, then 3 debate
-rounds, then a judge pass that can request up to 1 focused replay round.
+By default, Agent Kombat runs the `plan` contract: Round 0 independent plan
+generation, then 3 debate rounds, then a judge pass that can request up to 1
+focused replay round.
 
 `@file` references are expanded by the broker before agents are called. The file
 content is treated as input data, not instructions to execute.
 
-Agent calls are planning-only by default. Claude is invoked with tools disabled
-and plan permission mode. Codex is invoked with a read-only sandbox and explicit
-prompts that forbid command execution for debate turns.
+Agent calls are execution-disabled by default. Claude is invoked with tools
+disabled and plan permission mode. Codex is invoked with a read-only sandbox and
+explicit prompts that forbid command execution for debate turns.

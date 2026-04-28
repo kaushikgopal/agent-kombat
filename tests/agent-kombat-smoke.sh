@@ -35,6 +35,12 @@ python3 "$PLAN_CORE" render-instructions \
   >"$TMP_DIR/plan-instructions.md"
 grep -q "Shared Planning Instructions" "$TMP_DIR/plan-instructions.md"
 grep -q "If an adapter writes the target path, it must create the selected plans directory first" "$TMP_DIR/plan-instructions.md"
+python3 "$PLAN_CORE" render-context \
+  --skill-root "$ROOT_DIR/skills/plan" \
+  --classification "$TMP_DIR/plan-stale-skill-root.json" \
+  >"$TMP_DIR/plan-context.md"
+grep -q "Shared Planning Context" "$TMP_DIR/plan-context.md"
+grep -q "Do not let plan-note storage rules shape non-plan artifacts" "$TMP_DIR/plan-context.md"
 
 mkdir -p "$TMP_DIR/plan-guidance"
 printf '%s\n' 'Use `docs/plans` as the recommended directory for plans.' \
@@ -137,7 +143,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$session_id" ]] || session_id="fake-claude-session"
-if [[ "$prompt" == *"You are synthesizing the final implementation plan"* ]]; then
+if [[ "$prompt" == *"You are synthesizing the final requested artifact"* ]]; then
+  jq -n --arg session_id "$session_id" '{
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    session_id: $session_id,
+    result: "# Final Artifact\n\nShip the converged artifact.\n"
+  }'
+elif [[ "$prompt" == *"You are synthesizing the final implementation plan"* ]]; then
   jq -n --arg session_id "$session_id" '{
     type: "result",
     subtype: "success",
@@ -202,32 +216,63 @@ elif [[ "$prompt" == *"You are an independent judge"* ]]; then
     }'
   fi
 elif [[ "$prompt" == *"strengths_to_steal"* ]]; then
-  jq -n --arg session_id "$session_id" '{
-    type: "result",
-    subtype: "success",
-    is_error: false,
-    session_id: $session_id,
-    structured_output: {
-      strengths_to_steal: ["Codex keeps artifacts explicit."],
-      revised_plan_markdown: "# Claude Revised Plan\n\n- Build the smallest useful version.\n- Keep artifacts explicit.\n",
-      critique: ["The competing plan is too terse."],
-      unresolved_issues: [{
-        issue: "Scope",
-        why_it_matters: "The plan needs an explicit stopping point.",
-        suggested_test_or_decision_rule: "Accept if the smoke test passes."
-      }]
-    },
-    result: "Done."
-  }'
+  if [[ "$prompt" == *"revised_artifact_markdown"* ]]; then
+    jq -n --arg session_id "$session_id" '{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: $session_id,
+      structured_output: {
+        strengths_to_steal: ["Codex keeps artifacts explicit."],
+        revised_artifact_markdown: "# Claude Revised Artifact\n\n- Keep the artifact direct.\n- Keep artifacts explicit.\n",
+        critique: ["The competing artifact is too terse."],
+        unresolved_issues: [{
+          issue: "Scope",
+          why_it_matters: "The artifact needs an explicit stopping point.",
+          suggested_test_or_decision_rule: "Accept if the smoke test passes."
+        }]
+      },
+      result: "Done."
+    }'
+  else
+    jq -n --arg session_id "$session_id" '{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: $session_id,
+      structured_output: {
+        strengths_to_steal: ["Codex keeps artifacts explicit."],
+        revised_plan_markdown: "# Claude Revised Plan\n\n- Build the smallest useful version.\n- Keep artifacts explicit.\n",
+        critique: ["The competing plan is too terse."],
+        unresolved_issues: [{
+          issue: "Scope",
+          why_it_matters: "The plan needs an explicit stopping point.",
+          suggested_test_or_decision_rule: "Accept if the smoke test passes."
+        }]
+      },
+      result: "Done."
+    }'
+  fi
 else
-  jq -n --arg session_id "$session_id" '{
-    type: "result",
-    subtype: "success",
-    is_error: false,
-    session_id: $session_id,
-    structured_output: {plan_markdown: "# Claude Plan\n\n- Build the smallest useful version.\n"},
-    result: "Done."
-  }'
+  if [[ "$prompt" == *"artifact_markdown"* ]]; then
+    jq -n --arg session_id "$session_id" '{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: $session_id,
+      structured_output: {artifact_markdown: "# Claude Artifact\n\n- Build the requested artifact.\n"},
+      result: "Done."
+    }'
+  else
+    jq -n --arg session_id "$session_id" '{
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: $session_id,
+      structured_output: {plan_markdown: "# Claude Plan\n\n- Build the smallest useful version.\n"},
+      result: "Done."
+    }'
+  fi
 fi
 SH
 
@@ -289,22 +334,39 @@ if [[ "$prompt" == *"strengths_to_steal"* ]]; then
     echo "simulated codex debate failure" >&2
     exit 7
   fi
-  jq -n '{
-    strengths_to_steal: ["Claude keeps the implementation small."],
-    revised_plan_markdown: "# Codex Revised Plan\n\n- Keep state auditable on disk.\n- Keep the implementation small.\n",
-    critique: ["The competing plan needs clearer artifacts."],
-    unresolved_issues: [{
-      issue: "Artifacts",
-      why_it_matters: "Resume depends on durable files.",
-      suggested_test_or_decision_rule: "Accept if r1.json and objections exist."
-    }]
-  }' >"$output_last"
+  if [[ "$prompt" == *"revised_artifact_markdown"* ]]; then
+    jq -n '{
+      strengths_to_steal: ["Claude keeps the artifact small."],
+      revised_artifact_markdown: "# Codex Revised Artifact\n\n- Keep state auditable on disk.\n- Keep the artifact direct.\n",
+      critique: ["The competing artifact needs clearer evidence."],
+      unresolved_issues: [{
+        issue: "Artifacts",
+        why_it_matters: "Resume depends on durable files.",
+        suggested_test_or_decision_rule: "Accept if r1.json and objections exist."
+      }]
+    }' >"$output_last"
+  else
+    jq -n '{
+      strengths_to_steal: ["Claude keeps the implementation small."],
+      revised_plan_markdown: "# Codex Revised Plan\n\n- Keep state auditable on disk.\n- Keep the implementation small.\n",
+      critique: ["The competing plan needs clearer artifacts."],
+      unresolved_issues: [{
+        issue: "Artifacts",
+        why_it_matters: "Resume depends on durable files.",
+        suggested_test_or_decision_rule: "Accept if r1.json and objections exist."
+      }]
+    }' >"$output_last"
+  fi
 elif [[ "$prompt" == *'"status":"ok"'* ]]; then
   jq -n '{status: "ok", message: "fresh"}' >"$output_last"
 elif [[ "$prompt" == *"Reply with exactly: resumed"* ]]; then
   printf 'resumed\n' >"$output_last"
 else
-  jq -n '{plan_markdown: "# Codex Plan\n\n- Keep state auditable on disk.\n"}' >"$output_last"
+  if [[ "$prompt" == *"artifact_markdown"* ]]; then
+    jq -n '{artifact_markdown: "# Codex Artifact\n\n- Keep state auditable on disk.\n"}' >"$output_last"
+  else
+    jq -n '{plan_markdown: "# Codex Plan\n\n- Keep state auditable on disk.\n"}' >"$output_last"
+  fi
 fi
 jq -cn --arg thread_id "$thread_id" '{type: "thread.started", thread_id: $thread_id}'
 jq -cn '{type: "turn.completed", usage: {}}'
@@ -420,6 +482,48 @@ jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DI
 grep -q "Claude Revised Plan" "$TMP_DIR/run/plan-agent1.md"
 grep -q "Codex Revised Plan" "$TMP_DIR/run/plan-agent2.md"
 grep -Fq 'resume -c sandbox_mode="read-only"' "$TMP_DIR/codex-run-args.log"
+
+PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
+  --no-interactive \
+  --contract artifact \
+  --rounds 1 \
+  --no-judge \
+  --workdir "$TMP_DIR/artifact-run" \
+  "draft a tiny executive brief" >/tmp/agent-kombat-artifact.out
+
+test -f "$TMP_DIR/artifact-run/artifact-final.md"
+test ! -f "$TMP_DIR/artifact-run/plan-final.md"
+jq -e '.contract.id == "artifact" and .contract.context_mode == "context" and .last_successful_artifact == "artifact-final.md"' "$TMP_DIR/artifact-run/config.json" >/dev/null
+jq -e '.required == ["artifact_markdown"]' "$TMP_DIR/artifact-run/schemas/round0-plan.schema.json" >/dev/null
+jq -e '.required | index("revised_artifact_markdown")' "$TMP_DIR/artifact-run/schemas/debater.schema.json" >/dev/null
+grep -q "Shared Planning Context" "$TMP_DIR/artifact-run/rounds/r0-agent1.prompt.txt"
+grep -q "Do not create a plan unless the requirement explicitly asks for a plan." "$TMP_DIR/artifact-run/rounds/r0-agent1.prompt.txt"
+grep -q "Claude Revised Artifact" "$TMP_DIR/artifact-run/plan-agent1.md"
+grep -q "Codex Revised Artifact" "$TMP_DIR/artifact-run/plan-agent2.md"
+grep -q "Final Artifact" "$TMP_DIR/artifact-run/artifact-final.md"
+
+cat >"$TMP_DIR/brief-contract.json" <<'JSON'
+{
+  "id": "executive-brief",
+  "noun": "brief",
+  "output_field": "brief_markdown",
+  "revised_field": "revised_brief_markdown",
+  "final_filename": "brief-final.md",
+  "final_label": "Final brief",
+  "context_mode": "context",
+  "initial_task": "Draft the requested executive brief.",
+  "debate_task": "Revise your own brief after reviewing a competing brief.",
+  "synthesis_task": "Produce the final requested executive brief from the debate.",
+  "round0_note": "Do not output a plan; output the brief itself.",
+  "synthesis_note": "Return the final brief copy only."
+}
+JSON
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
+  --contract "$TMP_DIR/brief-contract.json" \
+  --workdir "$TMP_DIR/custom-contract-dry" \
+  "draft a brief" >/tmp/agent-kombat-custom-contract.out
+jq -e '.contract.id == "executive-brief" and .contract.output_field == "brief_markdown" and .contract.final_filename == "brief-final.md"' \
+  <(sed -n '/^{/,$p' /tmp/agent-kombat-custom-contract.out) >/dev/null
 
 if PATH="$FAKE_BIN:$PATH" FAKE_CODEX_FAIL_DEBATE=1 "$ROOT_DIR/agent-kombat" \
   --no-interactive \

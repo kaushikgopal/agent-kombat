@@ -616,6 +616,71 @@ def command_render_instructions(args: argparse.Namespace) -> int:
     return 0
 
 
+def render_context(classification: Dict[str, Any], skill_root: Path) -> str:
+    kind = classification.get("kind")
+    mode = classification.get("mode")
+    action = classification.get("action")
+    needs_clarification = classification.get("needs_clarification")
+
+    parts = [
+        "# Shared Planning Context",
+        "",
+        "Use this context to ground the debate. The active Agent Kombat contract,",
+        "not this context block, controls the shape of the output artifact.",
+        "",
+        f"- Route: action={action}, kind={kind}, mode={mode}",
+        f"- Target path: {classification.get('target_path')}",
+        f"- Plans directory source: {classification.get('plans_dir_source')}",
+        f"- Existing plan: {classification.get('existing_plan_path') or 'none'}",
+        f"- Consider external research: {str(classification.get('should_consider_external_research')).lower()}",
+        f"- Consider context fan-out: {str(classification.get('should_consider_fanout_research')).lower()}",
+        "",
+    ]
+
+    if needs_clarification:
+        parts.extend(
+            [
+                "The request may need clarification before a high-quality artifact is produced.",
+                f"Clarification prompt: {classification.get('clarification_prompt')}",
+                "",
+            ]
+        )
+
+    parts.extend(
+        [
+            "Context handling guidance:",
+            "- Keep repo paths repo-relative when mentioning local files.",
+            "- Preserve known constraints from repo guidance and the request.",
+            "- Use external research only when freshness materially affects the artifact.",
+            "- Use context fan-out only when it materially improves grounding.",
+            "- Do not let plan-note storage rules shape non-plan artifacts.",
+            "",
+        ]
+    )
+
+    routing_path = skill_root / "references" / "routing.md"
+    if routing_path.is_file():
+        parts.extend(
+            [
+                "## Routing Reference",
+                "",
+                "The following is useful for classification and context gathering; ignore",
+                "plan-note output-shape instructions unless the active contract is `plan`.",
+                "",
+                read_text(routing_path),
+            ]
+        )
+
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def command_render_context(args: argparse.Namespace) -> int:
+    skill_root = resolve_path(args.skill_root, Path.cwd())
+    classification = read_json(args.classification)
+    sys.stdout.write(render_context(classification, skill_root))
+    return 0
+
+
 def extract_sections(body: str) -> Dict[str, str]:
     sections: Dict[str, List[str]] = {}
     current: Optional[str] = None
@@ -798,6 +863,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root directory containing SKILL.md and references/.",
     )
 
+    context_parser = subparsers.add_parser(
+        "render-context",
+        help="Render classification and grounding context without imposing the plan-note contract.",
+    )
+    context_parser.add_argument("--classification", default="-", help="Classification JSON path or '-'.")
+    context_parser.add_argument(
+        "--skill-root",
+        default=str(skill_root_from_script()),
+        help="Root directory containing SKILL.md and references/.",
+    )
+
     validate_parser = subparsers.add_parser("validate", help="Validate a durable plan note.")
     validate_parser.add_argument("--plan-file", required=True, help="Plan note to validate.")
     validate_parser.add_argument("--classification", help="Optional classification JSON path.")
@@ -814,6 +890,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return command_classify(args, parser)
     if args.command == "render-instructions":
         return command_render_instructions(args)
+    if args.command == "render-context":
+        return command_render_context(args)
     if args.command == "validate":
         return command_validate(args)
     parser.error(f"unknown command: {args.command}")
