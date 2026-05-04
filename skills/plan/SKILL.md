@@ -1,9 +1,6 @@
 ---
 name: plan
-description: >-
-  Create or refine a durable plan note for software and non-software work.
-  Use when the user has an idea, bug, issue, transcript, screenshot, or rough
-  prompt that should become a structured plan note before execution begins.
+description: Use to turn rough prompts, issues, or transcripts into plan notes.
 argument-hint: >-
   plan this auth bug | plan this meeting transcript into a proposal | plan
   .agents/plans/2026-04-25-auth-rewrite-plan.md
