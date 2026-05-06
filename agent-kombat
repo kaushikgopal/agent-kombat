@@ -28,6 +28,9 @@ NO_COLOR_FLAG=0
 NO_INTERACTIVE=0
 INTERACTIVE=0
 NO_JUDGE=0
+DEBUG_AGENT_CALLS="${AGENT_KOMBAT_DEBUG_AGENT_CALLS:-0}"
+HEARTBEAT_INTERVAL="${AGENT_KOMBAT_HEARTBEAT_SECONDS:-5}"
+AGENT_IDLE_TIMEOUT="${AGENT_KOMBAT_AGENT_IDLE_TIMEOUT_SECONDS:-0}"
 SHOW_WORKDIR=""
 RESUME_WORKDIR=""
 REQUIREMENT_FILE=""
@@ -83,6 +86,11 @@ Options:
       --requirement-file F Read requirement text from a file
       --show WORKDIR       Print latest state for a debate directory
       --resume WORKDIR     Resume from durable state
+      --debug-agent-calls  Write provider debug logs beside raw artifacts
+      --heartbeat-interval N
+                           Seconds between waiting status lines (default: 5)
+      --agent-idle-timeout N
+                           Fail an agent call after N seconds with no output
       --interactive        Allow optional terminal prompts
       --no-interactive     Disable optional terminal prompts
       --no-color           Disable ANSI color output
@@ -114,6 +122,174 @@ gum_progress_enabled() {
 progress_panel() {
   gum_progress_enabled || return 0
   gum style --border normal --padding "0 2" --margin "1 0" "$@" || true
+}
+
+format_duration() {
+  local seconds="$1"
+  if [[ "$seconds" -ge 3600 ]]; then
+    printf '%02d:%02d:%02d' "$((seconds / 3600))" "$(((seconds / 60) % 60))" "$((seconds % 60))"
+  else
+    printf '%02d:%02d' "$((seconds / 60))" "$((seconds % 60))"
+  fi
+}
+
+file_size_bytes() {
+  local file="$1"
+  [[ -e "$file" ]] || {
+    printf '0\n'
+    return
+  }
+  stat -f '%z' "$file" 2>/dev/null || stat -c '%s' "$file" 2>/dev/null || printf '0\n'
+}
+
+file_mtime_epoch() {
+  local file="$1"
+  [[ -e "$file" ]] || {
+    printf '0\n'
+    return
+  }
+  stat -f '%m' "$file" 2>/dev/null || stat -c '%Y' "$file" 2>/dev/null || printf '0\n'
+}
+
+human_bytes() {
+  local bytes="$1"
+  if [[ "$bytes" -ge 1048576 ]]; then
+    printf '%d MB' "$(((bytes + 1048575) / 1048576))"
+  elif [[ "$bytes" -ge 1024 ]]; then
+    printf '%d KB' "$(((bytes + 1023) / 1024))"
+  else
+    printf '%d B' "$bytes"
+  fi
+}
+
+print_heartbeat() {
+  local label="$1"
+  local elapsed="$2"
+  local stdout_label="$3"
+  local stdout_file="$4"
+  local stderr_file="$5"
+  local out_size
+  local err_size
+  out_size="$(file_size_bytes "$stdout_file")"
+  err_size="$(file_size_bytes "$stderr_file")"
+  local line
+  line="$(printf '%s... %s elapsed | %s %s | stderr %s' \
+    "$label" \
+    "$(format_duration "$elapsed")" \
+    "$stdout_label" \
+    "$(human_bytes "$out_size")" \
+    "$(human_bytes "$err_size")")"
+  if [[ -t 1 ]]; then
+    printf '\r%s' "$line"
+  else
+    printf '%s\n' "$line"
+  fi
+}
+
+kill_process_tree() {
+  local pid="$1"
+  pkill -TERM -P "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+  sleep 1
+  pkill -KILL -P "$pid" 2>/dev/null || true
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+run_with_heartbeat() {
+  local target="$1"
+  local label="$2"
+  local stdout_label="$3"
+  local cwd="$4"
+  local stdout_file="$5"
+  local stderr_file="$6"
+  shift 6
+
+  local start
+  local next_tick
+  local last_activity
+  local last_out_size
+  local last_err_size
+  local last_out_mtime
+  local last_err_mtime
+  start="$(date +%s)"
+  next_tick="$((start + HEARTBEAT_INTERVAL))"
+  last_activity="$start"
+  last_out_size="$(file_size_bytes "$stdout_file")"
+  last_err_size="$(file_size_bytes "$stderr_file")"
+  last_out_mtime="$(file_mtime_epoch "$stdout_file")"
+  last_err_mtime="$(file_mtime_epoch "$stderr_file")"
+
+  (
+    cd "$cwd"
+    "$@" </dev/null
+  ) >"$stdout_file" 2>"$stderr_file" &
+  local pid="$!"
+  local printed=0
+  log_event "$target" "agent.process.started" "$(jq -n \
+    --arg label "$label" \
+    --argjson pid "$pid" \
+    --arg stdout "$stdout_label" \
+    --arg stderr "$(basename "$stderr_file")" \
+    '{label: $label, pid: $pid, stdout: $stdout, stderr: $stderr}')"
+
+  while kill -0 "$pid" 2>/dev/null; do
+    local now
+    local out_size
+    local err_size
+    local out_mtime
+    local err_mtime
+    now="$(date +%s)"
+    out_size="$(file_size_bytes "$stdout_file")"
+    err_size="$(file_size_bytes "$stderr_file")"
+    out_mtime="$(file_mtime_epoch "$stdout_file")"
+    err_mtime="$(file_mtime_epoch "$stderr_file")"
+
+    if [[ "$out_size" != "$last_out_size" || "$err_size" != "$last_err_size" || "$out_mtime" != "$last_out_mtime" || "$err_mtime" != "$last_err_mtime" ]]; then
+      last_activity="$now"
+      last_out_size="$out_size"
+      last_err_size="$err_size"
+      last_out_mtime="$out_mtime"
+      last_err_mtime="$err_mtime"
+    fi
+
+    if [[ "$AGENT_IDLE_TIMEOUT" -gt 0 && "$((now - last_activity))" -ge "$AGENT_IDLE_TIMEOUT" ]]; then
+      if [[ -t 1 && "$printed" -eq 1 ]]; then
+        printf '\n'
+      fi
+      log_event "$target" "agent.process.timeout" "$(jq -n \
+        --arg label "$label" \
+        --argjson pid "$pid" \
+        --argjson idle_seconds "$((now - last_activity))" \
+        '{label: $label, pid: $pid, idle_seconds: $idle_seconds}')"
+      kill_process_tree "$pid"
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+
+    if [[ "$HEARTBEAT_INTERVAL" -gt 0 && "$now" -ge "$next_tick" ]]; then
+      print_heartbeat "$label" "$((now - start))" "$stdout_label" "$stdout_file" "$stderr_file"
+      printed=1
+      next_tick="$((now + HEARTBEAT_INTERVAL))"
+    fi
+    sleep 0.2
+  done
+
+  local status
+  if wait "$pid"; then
+    status=0
+  else
+    status="$?"
+  fi
+  if [[ -t 1 && "$printed" -eq 1 ]]; then
+    printf '\n'
+  fi
+  log_event "$target" "agent.process.completed" "$(jq -n \
+    --arg label "$label" \
+    --argjson pid "$pid" \
+    --argjson status "$status" \
+    --argjson elapsed_seconds "$(($(date +%s) - start))" \
+    '{label: $label, pid: $pid, status: $status, elapsed_seconds: $elapsed_seconds}')"
+  return "$status"
 }
 
 json_escape() {
@@ -226,6 +402,22 @@ parse_args() {
         NO_JUDGE=1
         shift
         ;;
+      --debug-agent-calls)
+        DEBUG_AGENT_CALLS=1
+        shift
+        ;;
+      --heartbeat-interval)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        parse_uint "heartbeat interval" "$2"
+        HEARTBEAT_INTERVAL="$2"
+        shift 2
+        ;;
+      --agent-idle-timeout)
+        [[ $# -ge 2 ]] || die "$1 requires a value"
+        parse_uint "agent idle timeout" "$2"
+        AGENT_IDLE_TIMEOUT="$2"
+        shift 2
+        ;;
       --requirement-file)
         [[ $# -ge 2 ]] || die "$1 requires a value"
         REQUIREMENT_FILE="$2"
@@ -267,6 +459,17 @@ parse_args() {
         ;;
     esac
   done
+}
+
+validate_runtime_options() {
+  parse_uint "heartbeat interval" "$HEARTBEAT_INTERVAL"
+  parse_uint "agent idle timeout" "$AGENT_IDLE_TIMEOUT"
+  case "$DEBUG_AGENT_CALLS" in
+    0|1) ;;
+    true|TRUE|yes|YES) DEBUG_AGENT_CALLS=1 ;;
+    false|FALSE|no|NO) DEBUG_AGENT_CALLS=0 ;;
+    *) die "debug agent calls must be 0 or 1" ;;
+  esac
 }
 
 should_run_intake() {
@@ -391,6 +594,9 @@ expand_prompt_file_refs() {
         ;;
     esac
     [[ -f "$ref" ]] || die "referenced @file does not exist: $ref"
+    # Claude Code treats literal @file tokens as file attachments. Agent Kombat
+    # expands the file itself, so strip the trigger before provider handoff.
+    REQUIREMENT="${REQUIREMENT//@$ref/$ref}"
     addition="$(cat <<EOF
 $addition
 
@@ -626,7 +832,13 @@ tool_version() {
 }
 
 default_workdir() {
-  date '+debate_%Y%m%d_%H%M%S'
+  local name
+  name="$(date '+debate_%Y%m%d_%H%M%S')"
+  if [[ -d ".agents/plans" ]]; then
+    printf '.agents/plans/%s\n' "$name"
+  else
+    printf '%s\n' "$name"
+  fi
 }
 
 write_config() {
@@ -673,6 +885,9 @@ write_config() {
     --argjson rounds "$ROUNDS" \
     --argjson max_extra "$MAX_EXTRA_ROUNDS" \
     --argjson judge_enabled "$judge_enabled" \
+    --argjson debug_agent_calls "$DEBUG_AGENT_CALLS" \
+    --argjson heartbeat_interval "$HEARTBEAT_INTERVAL" \
+    --argjson agent_idle_timeout "$AGENT_IDLE_TIMEOUT" \
     '{
       origin_cwd: $origin_cwd,
       workdir: $workdir,
@@ -725,6 +940,11 @@ write_config() {
       rounds_planned: $rounds,
       max_extra_rounds: $max_extra,
       judge_enabled: $judge_enabled,
+      runtime: {
+        debug_agent_calls: $debug_agent_calls,
+        heartbeat_interval_seconds: $heartbeat_interval,
+        agent_idle_timeout_seconds: $agent_idle_timeout
+      },
       current_round: 0,
       last_successful_artifact: null,
       status: $status
@@ -1271,10 +1491,15 @@ run_claude_round0() {
   local prompt_file="$target/rounds/r0-agent1.prompt.txt"
   local instructions_file="$target/rounds/r0-plan-instructions.md"
   local raw_file="$target/rounds/r0-agent1.raw.json"
+  local stderr_file="$target/rounds/r0-agent1.stderr"
   local plan_file="$target/rounds/r0-agent1.md"
   local session_id
+  local claude_debug_args=()
 
   session_id="$(uuid)"
+  if [[ "$DEBUG_AGENT_CALLS" -eq 1 ]]; then
+    claude_debug_args=(--debug-file "$target/rounds/r0-agent1.debug.log")
+  fi
   build_round0_prompt "$target/requirement.txt" "$instructions_file" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent1 --arg round r0 '{agent: $agent, round: $round}')"
@@ -1282,19 +1507,23 @@ run_claude_round0() {
     "Waiting for Claude Code" \
     "Round 0 independent $CONTRACT_NOUN generation" \
     "Writing: rounds/r0-agent1.raw.json"
-  if ! (
-    cd "$origin_cwd"
+  if ! run_with_heartbeat \
+    "$target" \
+    "Waiting for Claude Code" \
+    "rounds/r0-agent1.raw.json" \
+    "$origin_cwd" \
+    "$raw_file" \
+    "$stderr_file" \
     claude -p \
       --model "$CLAUDE_MODEL" \
+      "${claude_debug_args[@]}" \
       --session-id "$session_id" \
-      --permission-mode plan \
       --tools "" \
       --output-format json \
       --json-schema "$schema_json" \
-      "$(cat "$prompt_file")"
-  ) >"$raw_file" 2>"$target/rounds/r0-agent1.stderr"; then
+      "$(cat "$prompt_file")"; then
     log_event "$target" "agent.call.failed" "$(jq -n --arg agent agent1 --arg round r0 '{agent: $agent, round: $round}')"
-    sed -n '1,80p' "$target/rounds/r0-agent1.stderr" >&2
+    sed -n '1,80p' "$stderr_file" >&2
     die "Claude round 0 call failed"
   fi
 
@@ -1321,14 +1550,19 @@ run_judge_attempt() {
   local objections="$target/rounds/judge-${attempt}-objections.json"
   local prompt_file="$target/rounds/judge-${attempt}.prompt.txt"
   local raw_file="$target/rounds/judge-${attempt}.raw.json"
+  local stderr_file="$target/rounds/judge-${attempt}.stderr"
   local verdict_file="$target/rounds/judge-${attempt}.json"
   local session_id
+  local claude_debug_args=()
 
   build_round_summary_json "$target" >"$round_summary"
   build_objections_json "$target" >"$objections"
   build_judge_prompt "$target" "$round_summary" "$objections" >"$prompt_file"
 
   session_id="$(uuid)"
+  if [[ "$DEBUG_AGENT_CALLS" -eq 1 ]]; then
+    claude_debug_args=(--debug-file "$target/rounds/judge-${attempt}.debug.log")
+  fi
   update_config "$target" --arg id "$session_id" '.phase = "judge" | .judge.session_id = $id'
   log_event "$target" "judge.call.started" "$(jq -n --arg attempt "$attempt" --arg session_id "$session_id" '{attempt: ($attempt|tonumber), session_id: $session_id}')"
 
@@ -1336,19 +1570,23 @@ run_judge_attempt() {
     "Waiting for judge" \
     "Attempt $attempt reviews the published debate artifacts" \
     "Writing: rounds/judge-${attempt}.json"
-  if ! (
-    cd "$origin_cwd"
+  if ! run_with_heartbeat \
+    "$target" \
+    "Waiting for judge" \
+    "rounds/judge-${attempt}.json" \
+    "$origin_cwd" \
+    "$raw_file" \
+    "$stderr_file" \
     claude -p \
       --model "$JUDGE_MODEL" \
+      "${claude_debug_args[@]}" \
       --session-id "$session_id" \
-      --permission-mode plan \
       --tools "" \
       --output-format json \
       --json-schema "$schema_json" \
-      "$(cat "$prompt_file")"
-  ) >"$raw_file" 2>"$target/rounds/judge-${attempt}.stderr"; then
+      "$(cat "$prompt_file")"; then
     log_event "$target" "judge.call.failed" "$(jq -n --arg attempt "$attempt" '{attempt: ($attempt|tonumber)}')"
-    sed -n '1,80p' "$target/rounds/judge-${attempt}.stderr" >&2
+    sed -n '1,80p' "$stderr_file" >&2
     die "judge attempt $attempt failed"
   fi
 
@@ -1375,11 +1613,16 @@ run_claude_debate_turn() {
   local session_id
   local prompt_file="$target/rounds/r${round}-agent1.prompt.txt"
   local raw_file="$target/rounds/r${round}-agent1.raw.json"
+  local stderr_file="$target/rounds/r${round}-agent1.stderr"
   local structured_file="$target/rounds/r${round}-agent1.json"
   local plan_file="$target/rounds/r${round}-agent1.md"
+  local claude_debug_args=()
 
   session_id="$(jq -r '.agent1.session_id' "$target/config.json")"
   [[ -n "$session_id" && "$session_id" != "null" ]] || die "missing Claude session id for debate resume"
+  if [[ "$DEBUG_AGENT_CALLS" -eq 1 ]]; then
+    claude_debug_args=(--debug-file "$target/rounds/r${round}-agent1.debug.log")
+  fi
   build_debate_prompt "$own_input" "$opponent_input" "$focus_file" >"$prompt_file"
 
   log_event "$target" "agent.call.started" "$(jq -n --arg agent agent1 --arg round "r${round}" '{agent: $agent, round: $round}')"
@@ -1388,19 +1631,23 @@ run_claude_debate_turn() {
     "Round $round debate turn" \
     "Reading: agent artifacts" \
     "Writing: rounds/r${round}-agent1.json"
-  if ! (
-    cd "$origin_cwd"
+  if ! run_with_heartbeat \
+    "$target" \
+    "Waiting for Claude Code" \
+    "rounds/r${round}-agent1.raw.json" \
+    "$origin_cwd" \
+    "$raw_file" \
+    "$stderr_file" \
     claude -p \
       --model "$CLAUDE_MODEL" \
+      "${claude_debug_args[@]}" \
       --resume "$session_id" \
-      --permission-mode plan \
       --tools "" \
       --output-format json \
       --json-schema "$schema_json" \
-      "$(cat "$prompt_file")"
-  ) >"$raw_file" 2>"$target/rounds/r${round}-agent1.stderr"; then
+      "$(cat "$prompt_file")"; then
     log_event "$target" "agent.call.failed" "$(jq -n --arg agent agent1 --arg round "r${round}" '{agent: $agent, round: $round}')"
-    sed -n '1,80p' "$target/rounds/r${round}-agent1.stderr" >&2
+    sed -n '1,80p' "$stderr_file" >&2
     die "Claude debate round $round failed"
   fi
 
@@ -1421,6 +1668,7 @@ run_codex_round0() {
   local prompt_file="$target/rounds/r0-agent2.prompt.txt"
   local instructions_file="$target/rounds/r0-plan-instructions.md"
   local jsonl_file="$target/rounds/r0-agent2.jsonl"
+  local stderr_file="$target/rounds/r0-agent2.stderr"
   local structured_file="$target/rounds/r0-agent2.structured.json"
   local plan_file="$target/rounds/r0-agent2.md"
   local session_id
@@ -1432,8 +1680,13 @@ run_codex_round0() {
     "Waiting for Codex CLI" \
     "Round 0 independent $CONTRACT_NOUN generation" \
     "Writing: rounds/r0-agent2.jsonl"
-  if ! (
-    cd "$origin_cwd"
+  if ! run_with_heartbeat \
+    "$target" \
+    "Waiting for Codex CLI" \
+    "rounds/r0-agent2.jsonl" \
+    "$origin_cwd" \
+    "$jsonl_file" \
+    "$stderr_file" \
     codex exec \
       --model "$CODEX_MODEL" \
       --sandbox read-only \
@@ -1441,11 +1694,9 @@ run_codex_round0() {
       --json \
       --output-schema "$schema_file" \
       --output-last-message "$structured_file" \
-      "$(cat "$prompt_file")" \
-      </dev/null
-  ) >"$jsonl_file" 2>"$target/rounds/r0-agent2.stderr"; then
+      "$(cat "$prompt_file")"; then
     log_event "$target" "agent.call.failed" "$(jq -n --arg agent agent2 --arg round r0 '{agent: $agent, round: $round}')"
-    sed -n '1,80p' "$target/rounds/r0-agent2.stderr" >&2
+    sed -n '1,80p' "$stderr_file" >&2
     die "Codex round 0 call failed"
   fi
 
@@ -1469,6 +1720,7 @@ run_codex_debate_turn() {
   local session_id
   local prompt_file="$target/rounds/r${round}-agent2.prompt.txt"
   local jsonl_file="$target/rounds/r${round}-agent2.jsonl"
+  local stderr_file="$target/rounds/r${round}-agent2.stderr"
   local structured_file="$target/rounds/r${round}-agent2.json"
   local plan_file="$target/rounds/r${round}-agent2.md"
 
@@ -1482,8 +1734,13 @@ run_codex_debate_turn() {
     "Round $round debate turn" \
     "Reading: agent artifacts" \
     "Writing: rounds/r${round}-agent2.json"
-  if ! (
-    cd "$origin_cwd"
+  if ! run_with_heartbeat \
+    "$target" \
+    "Waiting for Codex CLI" \
+    "rounds/r${round}-agent2.jsonl" \
+    "$origin_cwd" \
+    "$jsonl_file" \
+    "$stderr_file" \
     codex exec resume \
       -c 'sandbox_mode="read-only"' \
       --model "$CODEX_MODEL" \
@@ -1491,11 +1748,9 @@ run_codex_debate_turn() {
       --json \
       --output-last-message "$structured_file" \
       "$session_id" \
-      "$(cat "$prompt_file")" \
-      </dev/null
-  ) >"$jsonl_file" 2>"$target/rounds/r${round}-agent2.stderr"; then
+      "$(cat "$prompt_file")"; then
     log_event "$target" "agent.call.failed" "$(jq -n --arg agent agent2 --arg round "r${round}" '{agent: $agent, round: $round}')"
-    sed -n '1,80p' "$target/rounds/r${round}-agent2.stderr" >&2
+    sed -n '1,80p' "$stderr_file" >&2
     die "Codex debate round $round failed"
   fi
 
@@ -1792,8 +2047,13 @@ run_synthesis() {
 
   local prompt_file="$target/rounds/synthesis.prompt.txt"
   local raw_file="$target/rounds/synthesis.raw.json"
+  local stderr_file="$target/rounds/synthesis.stderr"
   local session_id
+  local claude_debug_args=()
   session_id="$(uuid)"
+  if [[ "$DEBUG_AGENT_CALLS" -eq 1 ]]; then
+    claude_debug_args=(--debug-file "$target/rounds/synthesis.debug.log")
+  fi
 
   build_synthesis_prompt "$target" >"$prompt_file"
   update_config "$target" --arg id "$session_id" '.phase = "synthesis" | .status = "running" | .synthesis = {name: "claude", model: .judge.model, session_id: $id}'
@@ -1803,18 +2063,22 @@ run_synthesis() {
     "Waiting for final synthesis" \
     "Combining the latest published artifacts" \
     "Writing: $CONTRACT_FINAL_FILENAME"
-  if ! (
-    cd "$origin_cwd"
+  if ! run_with_heartbeat \
+    "$target" \
+    "Waiting for final synthesis" \
+    "rounds/synthesis.raw.json" \
+    "$origin_cwd" \
+    "$raw_file" \
+    "$stderr_file" \
     claude -p \
       --model "$JUDGE_MODEL" \
+      "${claude_debug_args[@]}" \
       --session-id "$session_id" \
-      --permission-mode plan \
       --tools "" \
       --output-format json \
-      "$(cat "$prompt_file")"
-  ) >"$raw_file" 2>"$target/rounds/synthesis.stderr"; then
+      "$(cat "$prompt_file")"; then
     log_event "$target" "synthesis.call.failed"
-    sed -n '1,80p' "$target/rounds/synthesis.stderr" >&2
+    sed -n '1,80p' "$stderr_file" >&2
     die "synthesis failed"
   fi
 
@@ -2034,15 +2298,22 @@ run_contract_check() {
 
   step "checking Claude structured output and explicit resume"
   local claude_session
+  local claude_fresh_debug_args=()
+  local claude_resume_debug_args=()
   claude_session="$(uuid)"
+  if [[ "$DEBUG_AGENT_CALLS" -eq 1 ]]; then
+    claude_fresh_debug_args=(--debug-file "$root/claude-fresh.debug.log")
+    claude_resume_debug_args=(--debug-file "$root/claude-resume.debug.log")
+  fi
   claude -p \
     --model "$CLAUDE_MODEL" \
+    "${claude_fresh_debug_args[@]}" \
     --session-id "$claude_session" \
-    --permission-mode plan \
     --tools "" \
     --output-format json \
     --json-schema "$schema" \
     'Use the structured output schema. Set status to "ok" and message to "fresh".' \
+    </dev/null \
     >"$root/claude-fresh.json"
 
   jq -e --arg id "$claude_session" '.session_id == $id or .sessionId == $id' "$root/claude-fresh.json" >/dev/null \
@@ -2052,12 +2323,13 @@ run_contract_check() {
 
   claude -p \
     --model "$CLAUDE_MODEL" \
+    "${claude_resume_debug_args[@]}" \
     --resume "$claude_session" \
-    --permission-mode plan \
     --tools "" \
     --output-format json \
     --json-schema "$schema" \
     'Use the structured output schema. Set status to "ok" and message to "resume".' \
+    </dev/null \
     >"$root/claude-resume.json"
 
   jq -e --arg id "$claude_session" '.session_id == $id or .sessionId == $id' "$root/claude-resume.json" >/dev/null \
@@ -2130,6 +2402,7 @@ run_contract_check() {
 main() {
   init_model_defaults
   parse_args "$@"
+  validate_runtime_options
   run_interactive_intake
   load_requirement_file
   expand_prompt_file_refs

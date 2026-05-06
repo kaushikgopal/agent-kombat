@@ -89,6 +89,11 @@ grep -q "missing requirement" /tmp/agent-kombat-missing.out
 grep -q '"rounds_planned": 1' /tmp/agent-kombat-cheap.out
 grep -q '"judge_enabled": false' /tmp/agent-kombat-cheap.out
 
+"$ROOT_DIR/agent-kombat" --dry-run --no-interactive --debug-agent-calls --heartbeat-interval 2 --agent-idle-timeout 9 \
+  "runtime options" >/tmp/agent-kombat-runtime.out
+jq -e '.runtime.debug_agent_calls == 1 and .runtime.heartbeat_interval_seconds == 2 and .runtime.agent_idle_timeout_seconds == 9' \
+  <(sed -n '/^{/,$p' /tmp/agent-kombat-runtime.out) >/dev/null
+
 cat >"$TMP_DIR/sample-plan.md" <<'MD'
 # Sample Plan
 
@@ -105,7 +110,11 @@ grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-file.out
 
 "$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
   "debate @$TMP_DIR/sample-plan.md and focus on missing risks" >/tmp/agent-kombat-at-file.out
-grep -q "debate @$TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out
+grep -q "debate $TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out
+if grep -q "debate @$TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out; then
+  echo "expected @file trigger to be stripped from provider prompt" >&2
+  exit 1
+fi
 grep -q -- "<user-input-plan>" /tmp/agent-kombat-at-file.out
 grep -q -- "source: $TMP_DIR/sample-plan.md" /tmp/agent-kombat-at-file.out
 grep -q -- "</user-input-plan>" /tmp/agent-kombat-at-file.out
@@ -118,6 +127,13 @@ if "$ROOT_DIR/agent-kombat" --dry-run --no-interactive \
 fi
 grep -q "referenced @file does not exist" /tmp/agent-kombat-missing-ref.out
 
+mkdir -p "$TMP_DIR/default-plan-workdir/.agents/plans"
+(
+  cd "$TMP_DIR/default-plan-workdir"
+  "$ROOT_DIR/agent-kombat" --dry-run --no-interactive "default workdir" >"$TMP_DIR/default-plan-workdir.out"
+)
+grep -q "Workdir: $TMP_DIR/default-plan-workdir/.agents/plans/debate_" "$TMP_DIR/default-plan-workdir.out"
+
 FAKE_BIN="$TMP_DIR/bin"
 mkdir -p "$FAKE_BIN"
 
@@ -127,6 +143,13 @@ set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then
   echo "2.1.120 (Claude Code)"
   exit 0
+fi
+if [[ -n "${FAKE_CLAUDE_ARGS_LOG:-}" ]]; then
+  printf '%q ' "$@" >>"$FAKE_CLAUDE_ARGS_LOG"
+  printf '\n' >>"$FAKE_CLAUDE_ARGS_LOG"
+fi
+if [[ -n "${FAKE_CLAUDE_SLEEP:-}" ]]; then
+  sleep "$FAKE_CLAUDE_SLEEP"
 fi
 session_id=""
 prompt=""
@@ -435,6 +458,8 @@ grep -q "Build a tiny CLI that prints hello." /tmp/agent-kombat-intake.out
 FAKE_GUM_LOG="$TMP_DIR/run-gum.log" script -q "$TMP_DIR/run-gum.typescript" \
   env PATH="$FAKE_BIN:$PATH" \
   FAKE_GUM_LOG="$TMP_DIR/run-gum.log" \
+  FAKE_CLAUDE_SLEEP=2 \
+  AGENT_KOMBAT_HEARTBEAT_SECONDS=1 \
   "$ROOT_DIR/agent-kombat" \
   --no-interactive \
   --rounds 0 \
@@ -446,16 +471,21 @@ grep -q "Waiting for Claude Code" "$TMP_DIR/run-gum.typescript"
 grep -q "Waiting for Codex CLI" "$TMP_DIR/run-gum.typescript"
 grep -q "Writing: rounds/r0-agent1.raw.json" "$TMP_DIR/run-gum.typescript"
 grep -q "Waiting for final synthesis" "$TMP_DIR/run-gum.typescript"
+grep -q "elapsed | rounds/r0-agent1.raw.json" "$TMP_DIR/run-gum.typescript"
 
-PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-contract-args.log" "$ROOT_DIR/agent-kombat" \
+PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-contract-args.log" FAKE_CLAUDE_ARGS_LOG="$TMP_DIR/claude-contract-args.log" "$ROOT_DIR/agent-kombat" \
   --contract-check \
   --workdir "$TMP_DIR/contract" \
   --claude-model fake-claude \
   --codex-model fake-codex >/tmp/agent-kombat-contract.out
 jq -e '.status == "ok" and .codex.session_id == "fake-codex-thread"' "$TMP_DIR/contract/contract-summary.json" >/dev/null
 grep -Fq 'resume -c sandbox_mode="read-only"' "$TMP_DIR/codex-contract-args.log"
+if grep -q -- "--permission-mode" "$TMP_DIR/claude-contract-args.log"; then
+  echo "expected Claude contract check to run without permission mode" >&2
+  exit 1
+fi
 
-PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-run-args.log" "$ROOT_DIR/agent-kombat" \
+PATH="$FAKE_BIN:$PATH" FAKE_CODEX_ARGS_LOG="$TMP_DIR/codex-run-args.log" FAKE_CLAUDE_ARGS_LOG="$TMP_DIR/claude-run-args.log" "$ROOT_DIR/agent-kombat" \
   --no-interactive \
   --rounds 1 \
   --no-judge \
@@ -482,6 +512,11 @@ jq -e '.agent1[0].issue == "Scope" and .agent2[0].issue == "Artifacts"' "$TMP_DI
 grep -q "Claude Revised Plan" "$TMP_DIR/run/plan-agent1.md"
 grep -q "Codex Revised Plan" "$TMP_DIR/run/plan-agent2.md"
 grep -Fq 'resume -c sandbox_mode="read-only"' "$TMP_DIR/codex-run-args.log"
+grep -q "agent.process.started" "$TMP_DIR/run/events.jsonl"
+if grep -q -- "--permission-mode" "$TMP_DIR/claude-run-args.log"; then
+  echo "expected Claude agent calls to run without permission mode" >&2
+  exit 1
+fi
 
 PATH="$FAKE_BIN:$PATH" "$ROOT_DIR/agent-kombat" \
   --no-interactive \

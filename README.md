@@ -86,6 +86,7 @@ Rounds: 3 + up to 1 replay
 Requirement: plan a tiny CLI that prints hello
 Workdir: debate_YYYYMMDD_HHMMSS
 ==> Round 0: independent plan generation
+Waiting for Claude Code... 00:10 elapsed | rounds/r0-agent1.raw.json 0 B | stderr 0 B
 ok: Round 0 published
 ==> Round 1: debate
 ok: Round 1 published
@@ -97,6 +98,10 @@ ok: Round 3 published
 ok: Judge verdict written
 ok: Final plan: debate_YYYYMMDD_HHMMSS/plan-final.md
 ```
+
+If the current repository has `.agents/plans/`, the default debate directory is
+created there as `.agents/plans/debate_YYYYMMDD_HHMMSS`. Pass `--workdir` to
+choose a different location.
 
 ### Debate a Non-Plan Artifact
 
@@ -160,16 +165,17 @@ Run it with:
 
 ### Use an Existing Plan File
 
-Use `@file` when the plan already exists and you want Agent Kombat to load it:
+Prefer `--requirement-file` when the plan already exists and you want Agent
+Kombat to load it:
 
 ```sh
-./agent-kombat "@sample-plan.md"
+./agent-kombat --requirement-file sample-plan.md "debate this plan"
 ```
 
 Agent Kombat writes the expanded prompt to `requirement.txt`:
 
 ```text
-@sample-plan.md
+debate this plan
 
 <user-input-plan>
 source: sample-plan.md
@@ -181,7 +187,7 @@ source: sample-plan.md
 
 ### Prompt + Plan File
 
-Add instructions around the `@file` reference when you want to steer the debate:
+The `@file` shorthand is also supported when you want to steer the debate:
 
 ```sh
 ./agent-kombat "debate @sample-plan.md and focus on missing risks"
@@ -190,7 +196,7 @@ Add instructions around the `@file` reference when you want to steer the debate:
 Agent Kombat writes the expanded prompt to `requirement.txt`:
 
 ```text
-debate @sample-plan.md and focus on missing risks
+debate sample-plan.md and focus on missing risks
 
 <user-input-plan>
 source: sample-plan.md
@@ -321,9 +327,11 @@ By default, Agent Kombat runs the `plan` contract: Round 0 independent plan
 generation, then 3 debate rounds, then a judge pass that can request up to 1
 focused replay round.
 
-`@file` references are expanded by the broker before agents are called. The file
-content is treated as input data, not instructions to execute.
+`@file` references are expanded by the broker before agents are called. The
+literal `@file` token is removed from the provider prompt so Claude Code does
+not attach the same file a second time. The file content is treated as input
+data, not instructions to execute.
 
-Agent calls are execution-disabled by default. Claude is invoked with tools
-disabled and plan permission mode. Codex is invoked with a read-only sandbox and
-explicit prompts that forbid command execution for debate turns.
+Agent calls are execution-disabled by default. Claude is invoked in print mode
+with stdin closed and tools disabled. Codex is invoked with a read-only sandbox
+and explicit prompts that forbid command execution for debate turns.
